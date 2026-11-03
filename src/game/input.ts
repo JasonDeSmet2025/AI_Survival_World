@@ -10,6 +10,15 @@
  *  B              toggle crafting menu
  *  1-8            select hotbar slot
  */
+/**
+ * Hard cap on accumulated pointer delta consumed in a single frame (px per
+ * axis). Browsers can deliver huge movement spikes (window refocus, focus
+ * returning after an alt-tab, pointer-lock reacquire); without a cap one
+ * frame would swing the camera violently. Normal gameplay deltas are far
+ * below this value, so gameplay feel is unchanged.
+ */
+const MAX_FRAME_MOUSE_DELTA = 240;
+
 export class InputController {
   private keys = new Set<string>();
   private canvas: HTMLCanvasElement;
@@ -121,7 +130,10 @@ export class InputController {
   }
 
   consumeMouseDelta(): { x: number; y: number } {
-    const d = { x: this.pendingMouseX, y: this.pendingMouseY };
+    // Clamp spikes so a single frame can never rotate the camera wildly.
+    const clampAxis = (v: number): number =>
+      Math.max(-MAX_FRAME_MOUSE_DELTA, Math.min(MAX_FRAME_MOUSE_DELTA, v));
+    const d = { x: clampAxis(this.pendingMouseX), y: clampAxis(this.pendingMouseY) };
     this.pendingMouseX = 0;
     this.pendingMouseY = 0;
     return d;

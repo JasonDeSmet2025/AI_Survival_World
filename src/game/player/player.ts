@@ -83,9 +83,16 @@ export class PlayerCharacter {
     this.addPart(roll, this.torso, new Vector3(0, 0.44, -0.21), this.mats.playerBody);
 
     // Arms: shoulder pivot -> upper arm -> elbow -> forearm -> wrist/hand.
-    this.armL = this.node('playerArmL', this.hips, -0.27, 0.42, 0);
-    this.armR = this.node('playerArmR', this.hips, 0.27, 0.42, 0);
+    // Pivots live on the TORSO (not the hips) so the shoulders track the
+    // torso lean and arms can never visually detach from the body.
+    // Torso-space y = 0.42 (hips space) - 0.26 (torso offset) = 0.16.
+    this.armL = this.node('playerArmL', this.torso, -0.27, 0.16, 0);
+    this.armR = this.node('playerArmR', this.torso, 0.27, 0.16, 0);
     for (const [pivot, elbowName] of [[this.armL, 'L'], [this.armR, 'R']] as const) {
+      // Shoulder cap closes the gap between the torso capsule and the
+      // arm so the joint always reads as connected.
+      const shoulder = MeshBuilder.CreateSphere(`playerPart_shoulder${elbowName}`, { diameter: 0.17, segments: 10 }, scene);
+      this.addPart(shoulder, pivot, new Vector3(0, 0, 0), this.mats.playerBody);
       const upper = MeshBuilder.CreateCapsule(`playerPart_upperArm${elbowName}`, {
         radius: 0.075, height: 0.3, tessellation: 10,
       }, scene);
@@ -159,7 +166,9 @@ export class PlayerCharacter {
     if (kind === this.toolKind) return;
     const removed = this.toolMeshes;
     if (this.tool) {
-      this.tool.dispose(true);
+      // NOTE: in Babylon 9.33 the first dispose argument is `doNotRecurse`,
+      // so `dispose(true)` would leak every tool part. Bare call recurses.
+      this.tool.dispose();
       this.tool = null;
       this.toolMeshes = [];
     }
@@ -171,7 +180,10 @@ export class PlayerCharacter {
       this.tool.position.set(0, -0.02, 0.01);
       this.tool.rotation.x = 0.15;
       this.tool.rotation.z = 0.1;
-      this.toolMeshes = this.tool.getChildMeshes(true).filter((m): m is Mesh => m instanceof Mesh);
+      // NOTE: in Babylon 9.33 getChildMeshes(true) means DIRECT children
+      // only; tool parts (handle grip/butt, axe head) are nested deeper, so
+      // false is required to register every part as a shadow caster.
+      this.toolMeshes = this.tool.getChildMeshes(false).filter((m): m is Mesh => m instanceof Mesh);
     }
     if (this.onToolShadows) this.onToolShadows(this.toolMeshes, removed);
   }
@@ -231,10 +243,13 @@ export class PlayerCharacter {
       this.elbowL.rotation.x = -0.4;
       this.elbowR.rotation.x = -0.4;
     } else if (target === 'crouch') {
-      this.legL.rotation.x = 0.45;
-      this.legR.rotation.x = 0.45;
-      this.kneeL.rotation.x = 1.1;
-      this.kneeR.rotation.x = 1.1;
+      // Squat geometry tuned so the boots stay on the ground while the
+      // hips drop 0.14 m: thigh forward 0.3 rad, knee flex 0.47 rad keeps
+      // boot bottom at y ~= 0 instead of floating or clipping.
+      this.legL.rotation.x = 0.3;
+      this.legR.rotation.x = 0.3;
+      this.kneeL.rotation.x = 0.47;
+      this.kneeR.rotation.x = 0.47;
       this.armL.rotation.x = 0.15;
       this.armR.rotation.x = harvesting ? this.harvestArmX(dt) : 0.2;
       this.elbowL.rotation.x = -0.3;
@@ -285,8 +300,9 @@ export class PlayerCharacter {
     }
 
     // Body bob + crouch drop (root scale kept, hips move).
+    // The 0.14 drop matches the crouch leg pose above (boots stay planted).
     const hipBob = bob ? Math.abs(Math.sin(this.phase)) * 0.05 * a : 0;
-    const hipY = (0.92 - this.crouchMix * 0.2) + hipBob;
+    const hipY = (0.92 - this.crouchMix * 0.14) + hipBob;
     this.hips.position.y = hipY;
     // Torso leans forward slightly while moving, back when crouching.
     const leanTarget = bob ? 0.12 * a : this.crouchMix * 0.35;
@@ -319,6 +335,8 @@ export class PlayerCharacter {
   }
 
   dispose(): void {
-    this.root.dispose(true);
+    // Recurse into every joint and body part (Babylon 9.33: dispose(true)
+    // would mean doNotRecurse and leak the whole character).
+    this.root.dispose();
   }
 }

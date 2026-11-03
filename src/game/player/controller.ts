@@ -1,7 +1,8 @@
 import { Vector3 } from '@babylonjs/core';
 import type { InputController } from '../input';
 import { clamp } from '../core/noise';
-import { SEA_LEVEL, TERRAIN_SIZE, terrainHeight } from '../world/terrain';
+import { SEA_LEVEL, TERRAIN_SIZE } from '../world/terrain';
+import { groundHeight } from './ground';
 import type { Collider } from '../world/types';
 import type { WallSegment } from '../systems/building';
 
@@ -14,6 +15,11 @@ const GRAVITY = 22;
 const PLAYER_RADIUS = 0.42;
 /** Steeper uphill slopes than this (rise/run) cannot be climbed. */
 const MAX_SLOPE = 1.15;
+/**
+ * Feet within this height of the ground still count as grounded, so tiny
+ * per-frame numerical dips do not flicker the airborne state.
+ */
+const GROUND_EPS = 0.02;
 
 export interface PlayerState {
   pos: Vector3; // feet position
@@ -62,9 +68,12 @@ export class PlayerController {
     // Crouch toggle handled by key edge in the game shell; state here.
     const wantSprint = input.sprint && canSprint && (forward !== 0 || strafe !== 0);
 
-    // Water check based on terrain under the player.
-    const groundH = terrainHeight(this.pos.x, this.pos.z);
+    // Water check based on the rendered ground under the player.
+    const groundH = groundHeight(this.pos.x, this.pos.z);
     this.inWater = groundH < SEA_LEVEL - 0.35 && this.pos.y < SEA_LEVEL + 0.4;
+
+    const startX = this.pos.x;
+    const startZ = this.pos.z;
 
     let speed: number;
     if (this.inWater) speed = SWIM_SPEED;
@@ -95,15 +104,15 @@ export class PlayerController {
     const cz = clamp(nz, -half, half);
 
     // Slope gate: refuse to step up a wall.
-    const targetH = terrainHeight(cx, cz);
+    const targetH = groundHeight(cx, cz);
     const stepHyp = Math.hypot(cx - this.pos.x, cz - this.pos.z);
     if (this.onGround && stepHyp > 1e-4 && (targetH - this.pos.y) / stepHyp > MAX_SLOPE) {
       // Blocked by a steep slope: keep x, try sliding in z only, then x only.
-      const zH = terrainHeight(this.pos.x, cz);
+      const zH = groundHeight(this.pos.x, cz);
       if ((zH - this.pos.y) / Math.max(1e-4, Math.abs(cz - this.pos.z)) <= MAX_SLOPE) {
         this.pos.z = cz;
       } else {
-        const xH = terrainHeight(cx, this.pos.z);
+        const xH = groundHeight(cx, this.pos.z);
         if ((xH - this.pos.y) / Math.max(1e-4, Math.abs(cx - this.pos.x)) <= MAX_SLOPE) {
           this.pos.x = cx;
         }
@@ -148,6 +157,10 @@ export class PlayerController {
       }
     }
 
+    // Distance actually covered this frame (after slope gate and
+    // colliders) — used to tell "walking down the surface" from "airborne".
+    const moved = Math.hypot(this.pos.x - startX, this.pos.z - startZ);
+
     // Vertical physics.
     if (this.inWater) {
       // Buoyant swimming.
@@ -164,18 +177,32 @@ export class PlayerController {
 
     this.pos.y += this.vel.y * dt;
 
-    const gY = terrainHeight(this.pos.x, this.pos.z);
-    if (!this.inWater && this.pos.y <= gY && this.vel.y <= 0) {
-      this.pos.y = gY;
-      this.vel.y = 0;
-      this.onGround = true;
-    } else if (this.inWater) {
+    // Ground contact against the RENDERED surface (mesh-exact).
+    const gY = groundHeight(this.pos.x, this.pos.z);
+    if (this.inWater) {
       this.onGround = this.pos.y <= SEA_LEVEL + 0.3 && this.vel.y <= 0;
       if (this.pos.y < gY) this.pos.y = gY;
       if (this.pos.y > SEA_LEVEL + 0.9) {
         this.pos.y = SEA_LEVEL + 0.9;
         this.vel.y = Math.min(this.vel.y, 0);
       }
+    } else if (this.pos.y <= gY + GROUND_EPS && this.vel.y <= 0) {
+      // Standing, landing or walking up: snap exactly onto the visible
+      // ground so the player can never sink into the terrain mesh.
+      this.pos.y = gY;
+      this.vel.y = 0;
+      this.onGround = true;
+    } else if (this.onGround && this.pos.y - gY <= moved * MAX_SLOPE + 0.01) {
+      // Walking DOWN a slope: the surface drops faster than gravity can
+      // follow. Stick to the ground instead of floating, bouncing or
+      // flickering the airborne state. A real ledge drop (larger than the
+      // climbable-slope allowance for this step) falls through to the
+      // airborne branch below.
+      this.pos.y = gY;
+      this.vel.y = Math.min(this.vel.y, 0);
+    } else if (this.pos.y > gY + GROUND_EPS) {
+      // Airborne: jump in flight or walked off a ledge.
+      this.onGround = false;
     }
 
     this.speed = Math.hypot(dx, dz) * speed;
