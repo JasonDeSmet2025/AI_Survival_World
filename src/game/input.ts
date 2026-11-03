@@ -1,4 +1,15 @@
-/** Keyboard + pointer-lock mouse input for the game. */
+/**
+ * Keyboard + pointer-lock mouse input for the game.
+ * Key map:
+ *  WASD / arrows  move
+ *  Space          jump / swim up
+ *  Shift          sprint
+ *  C (hold)       crouch
+ *  E              interact (talk, drink, cook, pickup)
+ *  F (hold)       harvest
+ *  B              toggle crafting menu
+ *  1-8            select hotbar slot
+ */
 export class InputController {
   private keys = new Set<string>();
   private canvas: HTMLCanvasElement;
@@ -6,6 +17,9 @@ export class InputController {
   private pendingMouseX = 0;
   private pendingMouseY = 0;
   pointerLocked = false;
+
+  /** Single-press flags, consumed by the game loop. */
+  private pressed = new Set<string>();
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -27,6 +41,10 @@ export class InputController {
     ) {
       e.preventDefault();
     }
+    // Single-press events (ignored when the HUD text box is focused).
+    const target = e.target as HTMLElement | null;
+    if (target && target.tagName === 'INPUT') return;
+    if (!this.keys.has(e.code)) this.pressed.add(e.code);
     this.keys.add(e.code);
   };
 
@@ -54,7 +72,6 @@ export class InputController {
     }
   };
 
-  /** -1, 0 or 1 along the camera forward axis. */
   get forward(): number {
     let f = 0;
     if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) f += 1;
@@ -62,7 +79,6 @@ export class InputController {
     return f;
   }
 
-  /** -1, 0 or 1 along the camera left axis. */
   get strafe(): number {
     let s = 0;
     if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) s += 1;
@@ -74,7 +90,36 @@ export class InputController {
     return this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
   }
 
-  /** Returns accumulated mouse delta since last call and resets it. */
+  get jump(): boolean {
+    return this.keys.has('Space');
+  }
+
+  /** Held state (physics uses this for continuous jump/swim-up). */
+  get jumpHeld(): boolean {
+    return this.keys.has('Space');
+  }
+
+  get crouch(): boolean {
+    return this.keys.has('KeyC');
+  }
+
+  get harvest(): boolean {
+    return this.keys.has('KeyF');
+  }
+
+  get interact(): boolean {
+    return this.keys.has('KeyE');
+  }
+
+  /** True once per physical press. */
+  consumePress(code: string): boolean {
+    if (this.pressed.has(code)) {
+      this.pressed.delete(code);
+      return true;
+    }
+    return false;
+  }
+
   consumeMouseDelta(): { x: number; y: number } {
     const d = { x: this.pendingMouseX, y: this.pendingMouseY };
     this.pendingMouseX = 0;

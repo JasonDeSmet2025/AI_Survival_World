@@ -19,6 +19,7 @@ body {
   outline: none;
 }
 
+/* ---------------------------------------------------------------- HUD */
 .hud {
   position: fixed;
   inset: 0;
@@ -28,16 +29,398 @@ body {
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
 }
 
-.hud-title {
+/* Status bars */
+.bars-box {
   position: absolute;
-  top: 16px;
-  left: 20px;
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: 2px;
+  top: 14px;
+  right: 16px;
+  width: 210px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: rgba(10, 20, 35, 0.45);
+  padding: 10px 12px;
+  border-radius: 10px;
+  backdrop-filter: blur(3px);
 }
 
-.hud-controls {
+.bar {
+  position: relative;
+  height: 14px;
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+
+.bar-fill {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  border-radius: 7px;
+  transition: width 0.2s ease-out;
+}
+
+.bar-fill.bar-health {
+  background: linear-gradient(90deg, #7c1f1f, #d0453a);
+}
+.bar-fill.bar-hunger {
+  background: linear-gradient(90deg, #8a5a16, #e0a33c);
+}
+.bar-fill.bar-thirst {
+  background: linear-gradient(90deg, #1c4d7c, #4aa3e0);
+}
+.bar-fill.bar-stamina {
+  background: linear-gradient(90deg, #3f6d1f, #8fce3f);
+}
+
+.bar-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.temp {
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+}
+.temp-cold {
+  color: #9fd6ff;
+}
+.temp-hot {
+  color: #ffb066;
+}
+
+/* Hotbar */
+.hotbar {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 6px;
+  pointer-events: auto;
+}
+
+.slot {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  border-radius: 8px;
+  background: rgba(10, 20, 35, 0.55);
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.slot.selected {
+  border-color: #ffd76a;
+  box-shadow: 0 0 10px rgba(255, 215, 106, 0.45);
+}
+
+.slot-swatch {
+  position: absolute;
+  inset: 8px;
+  border-radius: 4px;
+  visibility: hidden;
+}
+
+.slot-count {
+  position: absolute;
+  right: 4px;
+  bottom: 2px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.slot-label {
+  position: absolute;
+  left: 4px;
+  top: 3px;
+  max-width: 48px;
+  font-size: 9px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Crosshair + prompt + progress */
+.crosshair {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  margin: -2px 0 0 -2px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.prompt {
+  position: absolute;
+  top: calc(50% + 28px);
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 14px;
+  padding: 6px 14px;
+  background: rgba(10, 20, 35, 0.65);
+  border-radius: 8px;
+  white-space: nowrap;
+}
+
+.progress {
+  position: absolute;
+  top: calc(50% - 34px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 160px;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+
+.progress > div {
+  height: 100%;
+  background: #8fce3f;
+}
+
+/* Crafting */
+.craft {
+  position: absolute;
+  top: 50%;
+  right: 18px;
+  transform: translateY(-50%);
+  width: 230px;
+  background: rgba(10, 20, 35, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+  padding: 12px;
+  pointer-events: auto;
+}
+
+.craft[hidden] {
+  display: none;
+}
+
+.craft-title {
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  letter-spacing: 1px;
+}
+
+.craft-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin-bottom: 6px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.craft-item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.craft-item.can {
+  border-color: #8fce3f;
+  background: rgba(143, 206, 63, 0.14);
+}
+
+.craft-name {
+  display: block;
+  font-weight: 600;
+}
+
+.craft-cost {
+  display: block;
+  opacity: 0.7;
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+/* Chat */
+.chat {
+  position: absolute;
+  bottom: 92px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 440px;
+  max-width: 90vw;
+  background: rgba(10, 20, 35, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+  padding: 10px 12px;
+  pointer-events: auto;
+}
+
+.chat[hidden] {
+  display: none;
+}
+
+.chat-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.chat-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: #ffd76a;
+}
+
+.chat-close {
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.chat-log {
+  max-height: 180px;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.45;
+  margin-bottom: 8px;
+}
+
+.chat-line {
+  margin-bottom: 4px;
+}
+
+.chat-line.dim {
+  opacity: 0.55;
+  font-style: italic;
+}
+
+.chat-who {
+  font-weight: 700;
+}
+
+.chat-input-row {
+  display: flex;
+  gap: 6px;
+}
+
+.chat-input {
+  flex: 1;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  color: #fff;
+  padding: 7px 10px;
+  font-size: 13px;
+  outline: none;
+}
+
+.chat-input-row button {
+  background: #2b6cb0;
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  padding: 0 14px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+/* Toast */
+.toast {
+  position: absolute;
+  bottom: 92px;
+  left: 18px;
+  padding: 8px 14px;
+  background: rgba(10, 20, 35, 0.75);
+  border: 1px solid rgba(255, 215, 106, 0.4);
+  border-radius: 8px;
+  font-size: 13px;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+.toast.show {
+  opacity: 1;
+}
+
+/* MP status + fps */
+.mp-status {
+  position: absolute;
+  top: 14px;
+  left: 16px;
+  font-size: 12px;
+  padding: 5px 10px;
+  background: rgba(10, 20, 35, 0.5);
+  border-radius: 8px;
+}
+
+.mp-status.offline {
+  opacity: 0.6;
+}
+
+.fps {
+  position: absolute;
+  top: 42px;
+  left: 16px;
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.fps.low {
+  color: #ff9c5b;
+}
+
+/* Death overlay */
+.death-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: rgba(20, 4, 4, 0.72);
+  pointer-events: auto;
+}
+
+.death-overlay[hidden] {
+  display: none;
+}
+
+.death-title {
+  font-size: 42px;
+  font-weight: 800;
+  letter-spacing: 4px;
+  color: #e0453a;
+}
+
+.death-btn {
+  background: #b03a2e;
+  border: none;
+  border-radius: 8px;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  padding: 12px 28px;
+  cursor: pointer;
+}
+
+/* Controls hint (before pointer lock) */
+.hud-hints {
   position: absolute;
   bottom: 16px;
   left: 20px;
@@ -51,7 +434,7 @@ body {
   backdrop-filter: blur(3px);
 }
 
-.hud-controls b {
+.hud-hints b {
   color: #ffd76a;
   font-weight: 600;
 }
