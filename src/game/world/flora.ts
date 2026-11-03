@@ -12,12 +12,13 @@ import {
 } from '@babylonjs/core';
 import type { ResourceNode, Collider } from './types';
 import type { SharedWorldState } from './worldState';
-import { fbm, hash2, mulberry32, smoothstep } from '../core/noise';
+import { clamp, fbm, hash2, mulberry32, smoothstep } from '../core/noise';
 import {
   TERRAIN_SIZE,
   terrainHeight,
   terrainNormal,
   terrainSlope,
+  minTerrainHeightInRadius,
   SEA_LEVEL,
   WORLD_SEED,
   isNearLake,
@@ -43,6 +44,12 @@ export interface Placement {
   variant: number;
   /** Yaw rotation in radians. */
   rotY: number;
+  /**
+   * Ground-settle depth in world units: how far the instance origin is sunk
+   * below the raw terrain height so the object seats on the lowest local
+   * ground within its footprint instead of floating or clipping on slopes.
+   */
+  sink: number;
 }
 
 /** Number of visual variants per flora kind. */
@@ -91,6 +98,12 @@ export function genPlacements(
       minScale: number;
       maxScale: number;
       variantPick?: (h: number, slope: number) => number;
+      /** Horizontal ground-contact radius as a multiple of the scale. */
+      footprint?: number;
+      /** Base embed depth as a multiple of the scale (trunk roots etc.). */
+      baseSink?: number;
+      /** Maximum allowed ground-settle depth in world units. */
+      sinkCap?: number;
     },
   ): void => {
     const variants = FLORA_VARIANTS[kind];
@@ -102,6 +115,11 @@ export function genPlacements(
       if (o.lakePad !== undefined && isNearLake(c.x, c.z, o.lakePad)) continue;
       if (!clear(c.x, c.z, o.radius)) continue;
       const variant = o.variantPick ? o.variantPick(y, slope) : Math.floor(rng() * variants);
+      const scale = o.minScale + rng() * (o.maxScale - o.minScale);
+      const rotY = rng() * Math.PI * 2;
+      const sink =
+        (o.baseSink ?? 0) * scale +
+        settleDepth(c.x, c.z, (o.footprint ?? 0.2) * scale, o.sinkCap ?? 0.1);
       out.push({
         x: c.x,
         z: c.z,
@@ -109,9 +127,10 @@ export function genPlacements(
         kind,
         radius: o.radius,
         maxHp: o.maxHp,
-        scale: o.minScale + rng() * (o.maxScale - o.minScale),
+        scale,
         variant,
-        rotY: rng() * Math.PI * 2,
+        rotY,
+        sink,
       });
     }
   };
@@ -134,6 +153,9 @@ export function genPlacements(
       lakePad: 5,
       minScale: 0.75,
       maxScale: 1.45,
+      footprint: 0.35,
+      baseSink: 0.1,
+      sinkCap: 0.8,
       variantPick: (h) => (h > 9 ? 2 : Math.floor(rng() * 2)),
     },
   );
@@ -154,6 +176,9 @@ export function genPlacements(
       lakePad: 5,
       minScale: 0.75,
       maxScale: 1.45,
+      footprint: 0.35,
+      baseSink: 0.1,
+      sinkCap: 0.8,
       variantPick: (h) => (h > 9 ? 2 : Math.floor(rng() * 2)),
     },
   );
@@ -176,6 +201,9 @@ export function genPlacements(
       lakePad: 5,
       minScale: 0.7,
       maxScale: 1.5,
+      footprint: 0.3,
+      baseSink: 0.1,
+      sinkCap: 0.8,
       variantPick: (h) => (h > 18 ? 2 : h > 11 ? 1 : 0),
     },
   );
@@ -199,6 +227,9 @@ export function genPlacements(
       maxH: 30,
       minScale: 0.7,
       maxScale: 1.6,
+      footprint: 0.55,
+      baseSink: 0.05,
+      sinkCap: 1.15,
       variantPick: (h, s) => {
         if (s > 0.9) return h > 8 ? 1 : 2; // angular on slopes
         if (h > 12) return 3; // slabs high up
@@ -224,6 +255,9 @@ export function genPlacements(
       lakePad: 3,
       minScale: 0.7,
       maxScale: 1.3,
+      footprint: 0.55,
+      baseSink: 0.05,
+      sinkCap: 0.75,
     },
   );
 
@@ -245,6 +279,8 @@ export function genPlacements(
       lakePad: 2.5,
       minScale: 0.7,
       maxScale: 1.5,
+      footprint: 0.15,
+      sinkCap: 0.3,
     },
   );
 
@@ -267,6 +303,8 @@ export function genPlacements(
       maxSlope: 0.6,
       minScale: 0.6,
       maxScale: 1.3,
+      footprint: 0.12,
+      sinkCap: 0.25,
       variantPick: () => Math.floor(rng() * 3),
     },
   );
@@ -287,10 +325,24 @@ export function genPlacements(
       lakePad: 2.5,
       minScale: 0.7,
       maxScale: 1.4,
+      footprint: 0.15,
+      sinkCap: 0.3,
     },
   );
 
   return out;
+}
+
+/**
+ * How far the ground rises above the anchor point within the object's
+ * ground-contact circle. Sinking the instance by this amount seats its base
+ * on the lowest local ground, so objects embed naturally on slopes instead
+ * of floating on one side and clipping on the other. Capped so large
+ * objects cannot disappear into steep ground.
+ */
+function settleDepth(x: number, z: number, footprint: number, cap: number): number {
+  const rise = terrainHeight(x, z) - minTerrainHeightInRadius(x, z, footprint);
+  return clamp(rise, 0, cap);
 }
 
 /**
@@ -316,6 +368,8 @@ function gridCandidates(
       const jz = (hash2(iz + 911, ix + 233) - 0.5) * cell * 0.9;
       const x = ix * cell + cell / 2 + jx;
       const z = iz * cell + cell / 2 + jz;
+      // Never place outside the rendered terrain tile.
+      if (Math.abs(x) > half - 1 || Math.abs(z) > half - 1) continue;
       if (rng() >= prob(x, z, terrainHeight(x, z))) continue;
       if (minDist > 0) {
         let ok = true;
@@ -374,8 +428,9 @@ export function populateFlora(
       const inst = proto.createInstance(`${kind}_${variant}_${i}`);
       const s = p.scale;
       inst.scaling.set(s, s, s);
-      const sink = kind === 'tree' || kind === 'pine' ? 0.15 * s : 0;
-      inst.position.set(p.x, p.y - sink, p.z);
+      // Settle on the lowest local ground within the footprint (see
+      // Placement.sink) so the base never floats or clips through terrain.
+      inst.position.set(p.x, p.y - p.sink, p.z);
 
       if (kind === 'tree' || kind === 'pine' || kind === 'rock' || kind === 'bush') {
         // Lean with the terrain, then apply the per-instance yaw.
@@ -403,8 +458,20 @@ export function populateFlora(
           maxHp: p.maxHp,
         };
         state.registerNode(node);
-        if (p.kind === 'rock') colliders.push({ x: p.x, z: p.z, radius: 1.1 });
+        if (p.kind === 'rock')
+          colliders.push({
+            x: p.x,
+            z: p.z,
+            // Scale-aware footprint so big boulders cannot be walked through.
+            radius: Math.min(1.6, Math.max(0.7, 0.85 * p.scale)),
+          });
       }
+
+      // Static instance: freeze its world matrix so per-frame matrix
+      // refreshes (thousands of instances) skip it. applyState() refreshes
+      // the matrix only when damage actually changes the transform.
+      inst.freezeWorldMatrix();
+
       visuals.push({ inst, node, baseScale: s });
     }
   }
@@ -416,12 +483,18 @@ export function populateFlora(
         if (!v.node) continue;
         const hp = state.hp[v.node.id] ?? v.node.maxHp;
         if (hp <= 0 || state.isDepleted(v.node.id)) {
-          v.inst.setEnabled(false);
-        } else {
-          v.inst.setEnabled(true);
-          // Visual damage feedback: shrink as hp drops.
-          const k = v.baseScale * (0.62 + 0.38 * (hp / v.node.maxHp));
+          if (v.inst.isEnabled()) v.inst.setEnabled(false);
+          continue;
+        }
+        if (!v.inst.isEnabled()) v.inst.setEnabled(true);
+        // Visual damage feedback: shrink as hp drops.
+        const k = v.baseScale * (0.62 + 0.38 * (hp / v.node.maxHp));
+        if (Math.abs(k - v.inst.scaling.x) > 1e-4) {
+          // World matrix is frozen for performance; refresh it only when the
+          // transform actually changes.
+          v.inst.unfreezeWorldMatrix();
           v.inst.scaling.set(k, k, k);
+          v.inst.freezeWorldMatrix();
         }
       }
     },

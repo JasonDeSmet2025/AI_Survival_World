@@ -60,20 +60,34 @@ export function terrainHeight(x: number, z: number): number {
 
   const dl = Math.hypot(x - LAKE.x, z - LAKE.z) / LAKE.radius;
   const lake = -LAKE.depth * (1 - smoothstep((dl - 0.25) / 0.5));
+  // Medium-scale rolling texture (30-60 unit features) so the ground does
+  // not read as smooth blobs at close range. Masked to the landmass.
+  const micro = (fbm(x * 0.031 + 7.7, z * 0.031 + 3.3, 3) - 0.5) * 1.9 * mask;
 
   let h =
     12 * mask + // interior landmass dome (keeps the core dry)
     base * 16 * mask + // large-scale relief
     hills * 7 * mask + // rolling hills
     mtn * 30 * mMask * mask + // mountains
+    micro + // medium-scale ground texture
     -34 * fade + // deep ocean floor outside the coast
     lake * mask;
 
-  // Beach flattening: on dry coastal ground only (not deep water, not the
-  // lake basin) so the shoreline reads as a soft sandy beach.
-  if (h >= 0 && h < 2.6 && mask > 0.3 && !isNearLake(x, z, 4)) {
-    const t = clamp((h + 2) / 4.6, 0, 1);
-    h = lerp(0.35, h, 0.15 + 0.85 * t * t);
+  // Smooth shoreline & lake-shore flattening: blend shallow ground toward a
+  // gentle beach ramp (a little above sea level, rising with the raw height
+  // so inland terrain is never carved away). Every term is a smoothstep of
+  // the raw height or of a distance, so the result is fully smooth: no
+  // vertical step at the waterline, no slope kink in the beach band and no
+  // hard edge around the lake basin.
+  const lakeProx = 1 - smoothstep((dl - 0.55) / 0.45); // 1 in basin -> 0 out
+  const beachW =
+    smoothstep((h + 2.2) / 1.2) * // fade out in deeper water
+    (1 - smoothstep((h - 1.3) / 0.9)) * // fade out on higher ground
+    (1 - lakeProx) * // skip the lake basin
+    smoothstep(mask / 0.55); // only on the landmass
+  if (beachW > 0) {
+    const beachTarget = 0.35 + 0.45 * h;
+    h = lerp(h, beachTarget, beachW * 0.85);
   }
   return h;
 }
@@ -91,9 +105,27 @@ export function terrainSlope(x: number, z: number): number {
   return Math.hypot(dx, dz) / (2 * e);
 }
 
-/** Terrain surface normal as a plain unit vector (approximate). */
+/**
+ * Minimum terrain height within a horizontal radius r (8-point lookaround
+ * plus the centre point, approximate). Used for object ground-settling and
+ * water-edge checks.
+ */
+export function minTerrainHeightInRadius(x: number, z: number, r: number): number {
+  let min = terrainHeight(x, z);
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    const h = terrainHeight(x + Math.cos(a) * r, z + Math.sin(a) * r);
+    if (h < min) min = h;
+  }
+  return min;
+}
+
+/**
+ * Terrain surface normal as a plain unit vector (approximate).
+ * Uses the same step as terrainSlope so slope and tilt agree.
+ */
 export function terrainNormal3(x: number, z: number): { x: number; y: number; z: number } {
-  const e = 1.2;
+  const e = 1.5;
   const hx = terrainHeight(x + e, z) - terrainHeight(x - e, z);
   const hz = terrainHeight(x, z + e) - terrainHeight(x - e, z);
   const vx = -hx / (2 * e);
