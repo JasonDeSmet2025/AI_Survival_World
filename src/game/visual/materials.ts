@@ -13,6 +13,12 @@ import { createTextureKit, type TextureKit } from './textures';
  * roughness and (where it helps) a procedural normal map, so the same
  * material language runs across flora, buildings, the player and tools.
  * Muted, natural palettes only — no toy colors.
+ *
+ * IMPORTANT: flora (world/flora.ts) bakes `albedoColor` of the flora
+ * materials into per-vertex colours and renders them with one shared white
+ * StandardMaterial. The albedo colours below therefore directly define the
+ * visible tint of ~2700 instanced plants/trees/rocks; keep them natural and
+ * low-saturation.
  */
 export interface SharedMaterials {
   // flora
@@ -70,24 +76,34 @@ export function createSharedMaterials(scene: Scene): SharedMaterials {
   const c = (r: number, g: number, b: number) => new Color3(r, g, b);
 
   // --- flora ---------------------------------------------------------------
-  const bark = textured('barkMat', kit.bark, c(1, 1, 1), 0.95);
+  // Bark/rock albedos are muted earth tones; the bark normal map gives the
+  // PBR pass (stumps/tools) real furrow depth.
+  const bark = textured('barkMat', kit.bark, c(0.3, 0.22, 0.15), 0.95);
   const rock = textured('rockMat', kit.rock, c(0.96, 0.97, 1.0), 1.0);
 
-  // Foliage keeps a flat albedo (per-instance vertex colors tint it) but
-  // gains PBR roughness so it reads as matte, organic material.
-  const leaf = pbr('leafMat', c(1, 1, 1), 0.92);
-  const pineLeaf = pbr('pineLeafMat', c(0.15, 0.31, 0.19), 0.9);
-  const bushLeaf = pbr('bushLeafMat', c(0.24, 0.42, 0.18), 0.9);
-  const grass = pbr('grassMat', c(0.34, 0.44, 0.2), 0.95);
+  // Foliage keeps per-instance vertex-color tints; these albedo values are
+  // the final baked tint base. De-saturated, Valheim-style olive greens.
+  const leaf = pbr('leafMat', c(0.45, 0.52, 0.34), 0.92);
+  // Pine cones are tinted around this base colour (tint ≈ 0.85..1.15); a
+  // dark, muted conifer green with less blue than a saturated lawn green.
+  const pineLeaf = pbr('pineLeafMat', c(0.13, 0.27, 0.16), 0.9);
+  const bushLeaf = pbr('bushLeafMat', c(0.22, 0.4, 0.17), 0.9);
+  const grass = pbr('grassMat', c(0.3, 0.4, 0.16), 0.95);
   const flower = pbr('flowerMat', c(1, 1, 1), 0.7);
-  const berry = pbr('berryMat', c(0.62, 0.1, 0.14), 0.35);
+  // Berries: deep muted red, slight sheen.
+  const berry = pbr('berryMat', c(0.42, 0.05, 0.07), 0.35);
 
   // --- player ---------------------------------------------------------------
+  // Muted survival-clothing palette; fabric textures repeat 2x and stay matte.
   const playerBody = textured('playerBodyMat', kit.fabricShirt, c(1, 1, 1), 0.9);
   const playerPants = textured('playerPantsMat', kit.fabricPants, c(1, 1, 1), 0.92);
   const playerBoots = textured('playerBootsMat', kit.fabricBoots, c(1.2, 1.1, 1.0), 0.8);
   const backpack = textured('backpackMat', kit.fabricPants, c(1.35, 1.15, 0.9), 0.85);
-  const playerSkin = pbr('playerSkinMat', c(0.86, 0.68, 0.52), 0.55);
+  // Fabric picks up only a little of the environment reflection.
+  for (const f of [playerBody, playerPants, playerBoots, backpack]) {
+    f.environmentIntensity = 0.7;
+  }
+  const playerSkin = pbr('playerSkinMat', c(0.82, 0.62, 0.45), 0.55);
   const playerHair = pbr('playerHairMat', c(0.16, 0.11, 0.07), 0.95);
 
   // --- buildings + tools -----------------------------------------------------

@@ -67,6 +67,29 @@ function fbm(x: number, y: number, cell: number, seed: number, octaves = 4): num
   return sum / total;
 }
 
+/** Smoothstep from [a,b] to 0..1 (0 below a, 1 above b). */
+function smooth01(edge0: number, edge1: number, x: number): number {
+  const t = x <= edge0 ? 0 : x >= edge1 ? 1 : (x - edge0) / (edge1 - edge0);
+  return t * t * (3 - 2 * t);
+}
+
+/** Blend an RGB pixel toward a target colour by factor k (in [0,1]). */
+function blendPixel(
+  d: Uint8ClampedArray,
+  i: number,
+  r: number,
+  g: number,
+  b: number,
+  tr: number,
+  tg: number,
+  tb: number,
+  k: number,
+): void {
+  d[i] = (r + (tr - r) * k) * 255;
+  d[i + 1] = (g + (tg - g) * k) * 255;
+  d[i + 2] = (b + (tb - b) * k) * 255;
+}
+
 function makeCanvas(size: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
   const c = document.createElement('canvas');
   c.width = size;
@@ -79,33 +102,41 @@ function makeCanvas(size: number): [HTMLCanvasElement, CanvasRenderingContext2D]
 // Albedo painters (natural, muted palettes)
 // ---------------------------------------------------------------------------
 
-/** Horizontal wooden planks with grain streaks, seams and subtle knots. */
+/**
+ * Horizontal wooden planks: per-plank tone variation, grain streaks, seams
+ * with staggered end joints, subtle knots and small nail heads.
+ */
 function paintPlanks(ctx: CanvasRenderingContext2D, size: number, base: [number, number, number], seed: number): void {
   const rand = rng(seed);
   // base wash
   const img = ctx.createImageData(size, size);
   const d = img.data;
+  const plankH = size / 4;
   for (let y = 0; y < size; y++) {
+    const plankRow = Math.floor(y / plankH);
+    // Each plank is slightly warmer/older than its neighbours.
+    const pb = hash2i(plankRow, 3, seed + 5);
+    const plankBias = 0.88 + pb * 0.24;
+    const plankHue = 0.96 + hash2i(plankRow, 7, seed + 9) * 0.1; // subtle warm/cool shift
     for (let x = 0; x < size; x++) {
-      // vertical grain streaks stretched along the plank
-      const grain = fbm(x * 1.4, y * 0.22, 22, seed, 3);
-      const blotch = fbm(x, y, 26, seed + 7, 3);
-      const plankRow = Math.floor(y / (size / 4));
-      const plankBias = 0.92 + 0.16 * hash2i(plankRow, 3, seed + 5);
+      // grain streaks run along the plank (x), with occasional wavy knots
+      const grain = fbm(x * 1.4, y * 0.22, 22, seed + plankRow, 3);
+      const fine = valueNoise(x * 2.2, y * 0.5, 6, seed + 17 + plankRow);
+      const blotch = fbm(x, y, 26, seed + 7 + plankRow, 2);
       const i = (y * size + x) * 4;
-      d[i] = base[0] * (0.72 + grain * 0.5 + blotch * 0.14) * plankBias;
-      d[i + 1] = base[1] * (0.72 + grain * 0.52 + blotch * 0.14) * plankBias;
-      d[i + 2] = base[2] * (0.74 + grain * 0.5 + blotch * 0.12) * plankBias;
+      const v = (0.68 + grain * 0.5 + fine * 0.12 + blotch * 0.14) * plankBias;
+      d[i] = base[0] * v * plankHue * 255;
+      d[i + 1] = base[1] * v * 255;
+      d[i + 2] = base[2] * v * (2 - plankHue) * 255; // shift red/blue oppositely
       d[i + 3] = 255;
     }
   }
   ctx.putImageData(img, 0, 0);
 
-  // plank seams (horizontal grooves)
-  const plankH = size / 4;
+  // plank seams (horizontal grooves) + small nail heads
   for (let p = 1; p < 4; p++) {
     const y = Math.round(p * plankH);
-    ctx.fillStyle = 'rgba(20,12,6,0.55)';
+    ctx.fillStyle = 'rgba(18,11,6,0.55)';
     ctx.fillRect(0, y - 1, size, 1);
     ctx.fillStyle = 'rgba(255,230,190,0.10)';
     ctx.fillRect(0, y, size, 1);
@@ -113,8 +144,14 @@ function paintPlanks(ctx: CanvasRenderingContext2D, size: number, base: [number,
     const joints = 1 + Math.floor(rand() * 2);
     for (let j = 0; j < joints; j++) {
       const x = Math.floor(rand() * size);
-      ctx.fillStyle = 'rgba(20,12,6,0.4)';
+      ctx.fillStyle = 'rgba(18,11,6,0.4)';
       ctx.fillRect(x, y - plankH, 1, plankH);
+    }
+    // two nail heads per plank end
+    for (let n = 0; n < 2; n++) {
+      const nx = Math.floor((n + 0.5 + rand() * 0.3) * size * 0.5 * (n === 0 ? 1 : 2));
+      ctx.fillStyle = 'rgba(25,20,16,0.75)';
+      ctx.fillRect(nx % size, y - plankH + 2 + Math.floor(rand() * 3), 2, 2);
     }
   }
   // knots
@@ -140,77 +177,107 @@ function paintToolWood(ctx: CanvasRenderingContext2D, size: number, base: [numbe
       const grain = fbm(x * 2.2, y * 0.25, 16, seed, 3);
       const fine = fbm(x * 4, y * 0.12, 8, seed + 3, 2) * 0.12;
       const i = (y * size + x) * 4;
-      d[i] = base[0] * (0.8 + grain * 0.45 + fine);
-      d[i + 1] = base[1] * (0.8 + grain * 0.45 + fine);
-      d[i + 2] = base[2] * (0.82 + grain * 0.4 + fine);
+      d[i] = base[0] * (0.8 + grain * 0.45 + fine) * 255;
+      d[i + 1] = base[1] * (0.8 + grain * 0.45 + fine) * 255;
+      d[i + 2] = base[2] * (0.82 + grain * 0.4 + fine) * 255;
       d[i + 3] = 255;
     }
   }
   ctx.putImageData(img, 0, 0);
 }
 
-/** Rough tree bark: vertical fissures. */
+/**
+ * Tree bark: layered vertical furrows with dark crevices and lighter ridge
+ * crests, large-scale tonal patches, and sparse muted moss/lichen.
+ */
 function paintBark(ctx: CanvasRenderingContext2D, size: number, base: [number, number, number], seed: number): void {
   const img = ctx.createImageData(size, size);
   const d = img.data;
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      const ridge = valueNoise(x, y * 0.35, 7, seed); // stretched vertically
-      const macro = fbm(x, y, 30, seed + 11, 3);
-      const crack = ridge < 0.34 ? 0.45 : 1.0;
+      // Two ridge fields stretched along Y -> deep furrows with rough crests
+      const ridge = valueNoise(x * 1.9, y * 0.1, 5, seed) * 0.65
+        + valueNoise(x * 3.4, y * 0.055, 4, seed + 19) * 0.35;
+      const centered = Math.abs(ridge - 0.5) * 2; // 0 at furrow bottom, 1 at crest
+      const furrow = centered < 0.22 ? 0.4 : 0.6 + (centered - 0.22) * 0.55;
+      const macro = fbm(x, y, 48, seed + 11, 3);
+      const v = furrow * (0.72 + macro * 0.55);
       const i = (y * size + x) * 4;
-      d[i] = base[0] * (0.55 + macro * 0.6) * crack;
-      d[i + 1] = base[1] * (0.55 + macro * 0.6) * crack;
-      d[i + 2] = base[2] * (0.55 + macro * 0.55) * crack;
+      const r = base[0] * v;
+      const g = base[1] * v;
+      const b = base[2] * v * 0.94; // bark is slightly blue-grey in the shadows
+      // Moss/lichen: low-frequency mask, desaturates toward a muted green-grey
+      const moss = fbm(x * 0.6, y * 0.55, 22, seed + 31, 3);
+      const mk = smooth01(0.58, 0.78, moss) * 0.45;
+      if (mk > 0) blendPixel(d, i, r, g, b, 0.34, 0.37, 0.26, mk);
+      else {
+        d[i] = r * 255; d[i + 1] = g * 255; d[i + 2] = b * 255;
+      }
       d[i + 3] = 255;
     }
   }
   ctx.putImageData(img, 0, 0);
 }
 
-/** Weathered rock: mottled grey with darker veins. */
+/**
+ * Weathered rock: broad tonal patches, mid-frequency mottling, darker veins
+ * and sparse pale lichen — a believable mid-grey with warm undertone.
+ */
 function paintRock(ctx: CanvasRenderingContext2D, size: number, base: [number, number, number], seed: number): void {
   const img = ctx.createImageData(size, size);
   const d = img.data;
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      const n = fbm(x, y, 18, seed, 5);
+      const macro = fbm(x, y, 26, seed, 4);
+      const mid = fbm(x * 1.7, y * 1.7, 11, seed + 7, 3);
       const vein = valueNoise(x * 2.5, y * 1.2, 10, seed + 21);
-      const veinDark = vein < 0.28 ? 0.62 : 1.0;
-      const speck = hash2i(x, y, seed + 31) < 0.06 ? 1.12 : 1.0;
+      const veinDark = vein < 0.28 ? 0.72 : 1.0;
+      const h = hash2i(x, y, seed + 31);
+      const speck = h < 0.04 ? 1.1 : h > 0.96 ? 0.86 : 1.0;
+      const v = (0.48 + macro * 0.5 + mid * 0.28) * veinDark * speck;
       const i = (y * size + x) * 4;
-      const v = (0.6 + n * 0.75) * veinDark * speck;
-      d[i] = base[0] * v;
-      d[i + 1] = base[1] * v;
-      d[i + 2] = base[2] * v;
+      const r = base[0] * v;
+      const g = base[1] * v;
+      const b = base[2] * v;
+      // Lichen: small pale grey-green blotches on the surface
+      const lichen = fbm(x * 0.9, y * 0.9, 9, seed + 41, 2);
+      const lk = smooth01(0.68, 0.82, lichen) * 0.4;
+      if (lk > 0) blendPixel(d, i, r, g, b, 0.52, 0.54, 0.42, lk);
+      else { d[i] = r * 255; d[i + 1] = g * 255; d[i + 2] = b * 255; }
       d[i + 3] = 255;
     }
   }
   ctx.putImageData(img, 0, 0);
 }
 
-/** Laid stone blocks with mortar joints (for stone buildings). */
+/** Laid stone blocks with mortar joints, per-block tone and edge bevels. */
 function paintStoneMasonry(ctx: CanvasRenderingContext2D, size: number, base: [number, number, number], seed: number): void {
   const rand = rng(seed);
   const img = ctx.createImageData(size, size);
   const d = img.data;
   const rows = 4;
+  const rh = size / rows;
+  const bw = size / 2;
   for (let y = 0; y < size; y++) {
+    const row = Math.floor(y / rh);
+    const fy = (y % rh) / rh; // 0..1 within row
     for (let x = 0; x < size; x++) {
+      const col = Math.floor((x + (row % 2) * bw * 0.5) / bw) % 2;
+      const blockBias = 0.86 + 0.22 * hash2i(row, col, seed + 3);
       const n = fbm(x, y, 14, seed, 4);
-      const row = Math.floor(y / (size / rows));
-      const blockBias = 0.88 + 0.2 * hash2i(row, Math.floor(x / (size / 2)), seed + 3);
+      // Bevel: blocks are lit on top, recessed at the bottom.
+      const bevel = 0.88 + smooth01(0, 0.12, fy) * 0.18 - smooth01(0.85, 1, fy) * 0.22;
       const i = (y * size + x) * 4;
-      d[i] = base[0] * (0.72 + n * 0.5) * blockBias;
-      d[i + 1] = base[1] * (0.72 + n * 0.5) * blockBias;
-      d[i + 2] = base[2] * (0.72 + n * 0.48) * blockBias;
+      const v = (0.7 + n * 0.45) * blockBias * bevel;
+      d[i] = base[0] * v * 255;
+      d[i + 1] = base[1] * v * 255;
+      d[i + 2] = base[2] * v * 1.02 * 255;
       d[i + 3] = 255;
     }
   }
   ctx.putImageData(img, 0, 0);
   // mortar lines
   ctx.fillStyle = 'rgba(24,22,20,0.55)';
-  const rh = size / rows;
   for (let r = 1; r < rows; r++) ctx.fillRect(0, Math.round(r * rh), size, 1);
   for (let r = 0; r < rows; r++) {
     const offset = (r % 2) * (size / 4);
@@ -232,9 +299,9 @@ function paintFabric(ctx: CanvasRenderingContext2D, size: number, base: [number,
       const n = fbm(x, y, 20, seed, 2) * 0.12;
       const i = (y * size + x) * 4;
       const v = (0.86 + n) * warp * weft;
-      d[i] = base[0] * v;
-      d[i + 1] = base[1] * v;
-      d[i + 2] = base[2] * v;
+      d[i] = base[0] * v * 255;
+      d[i + 1] = base[1] * v * 255;
+      d[i + 2] = base[2] * v * 255;
       d[i + 3] = 255;
     }
   }
@@ -325,7 +392,8 @@ export function createTextureKit(scene: Scene): TextureKit {
     const t = new DynamicTexture(name, canvas, scene, false);
     t.wrapU = Texture.WRAP_ADDRESSMODE;
     t.wrapV = Texture.WRAP_ADDRESSMODE;
-    t.anisotropicFilteringLevel = 4;
+    // 8x anisotropy keeps planks/bark readable at grazing angles (WebGL2).
+    t.anisotropicFilteringLevel = 8;
     t.uScale = repeat;
     t.vScale = repeat;
     if (srgb) t.gammaSpace = true;
@@ -345,7 +413,7 @@ export function createTextureKit(scene: Scene): TextureKit {
   return {
     planks: set(
       'plank',
-      (c, s) => paintPlanks(c, s, [0.52, 0.37, 0.21], 101),
+      (c, s) => paintPlanks(c, s, [0.5, 0.355, 0.21], 101),
       1.4,
       1,
     ),
@@ -357,14 +425,14 @@ export function createTextureKit(scene: Scene): TextureKit {
     ),
     bark: set(
       'bark',
-      (c, s) => paintBark(c, s, [0.32, 0.23, 0.15], 303),
-      1.6,
+      (c, s) => paintBark(c, s, [0.33, 0.24, 0.16], 303),
+      2.0,
       1,
     ),
     rock: set(
       'rock',
-      (c, s) => paintRock(c, s, [0.52, 0.51, 0.49], 404),
-      1.6,
+      (c, s) => paintRock(c, s, [0.5, 0.49, 0.47], 404),
+      1.8,
       1,
     ),
     stone: set(
@@ -505,6 +573,9 @@ export type EnvironmentPreset = 'day' | 'dusk' | 'night';
 /**
  * Build the three IBL cube presets (async — textures load from in-memory
  * data URLs). Returns a map; entries resolve as they load.
+ *
+ * In headless environments (unit tests, no canvas available) the cubes are
+ * created empty; the lighting system's isReady() guard keeps them inert.
  */
 export function createEnvironmentPresets(engine: AbstractEngine): Record<EnvironmentPreset, CubeTexture> {
   const presets: Record<EnvironmentPreset, EnvPreset> = {
@@ -512,9 +583,12 @@ export function createEnvironmentPresets(engine: AbstractEngine): Record<Environ
     dusk: ENV_DUSK,
     night: ENV_NIGHT,
   };
+  const headless = typeof document === 'undefined';
   const out = {} as Record<EnvironmentPreset, CubeTexture>;
   for (const key of Object.keys(presets) as EnvironmentPreset[]) {
-    out[key] = new CubeTexture(`env_${key}`, engine, null, false, envFaceUrls(presets[key]));
+    out[key] = headless
+      ? new CubeTexture('', engine, null, false)
+      : new CubeTexture(`env_${key}`, engine, null, false, envFaceUrls(presets[key]));
   }
   return out;
 }

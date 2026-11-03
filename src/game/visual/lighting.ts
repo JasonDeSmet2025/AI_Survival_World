@@ -24,6 +24,8 @@ const DUSK_SUN = new Color3(1.0, 0.58, 0.30);
 const NIGHT_SUN = new Color3(0.17, 0.21, 0.34); // moonlight
 const DAY_SKY_FOG = new Color3(0.62, 0.75, 0.85);
 const NIGHT_SKY_FOG = new Color3(0.035, 0.055, 0.1);
+// Warm haze that creeps in around sunrise/sunset for a Valheim-style mood.
+const DUSK_SKY_FOG = new Color3(0.58, 0.45, 0.36);
 const DAY_TOP = new Color3(0.34, 0.4, 0.5);
 const NIGHT_TOP = new Color3(0.05, 0.07, 0.13);
 const DAY_GROUND = new Color3(0.22, 0.2, 0.16);
@@ -55,6 +57,12 @@ export class Lighting {
   private currentEnv: EnvironmentPreset | null = null;
   /** Cycle clock in seconds since midnight. */
   private elapsed: number;
+  /** Reused scratch values — the frame loop must stay allocation-free. */
+  private fogScratch = new Color3();
+  private clearScratch = new Color4();
+  private topScratch = new Color3();
+  private groundScratch = new Color3();
+  private sunScaledScratch = new Color3();
 
   constructor(
     scene: Scene,
@@ -76,6 +84,10 @@ export class Lighting {
     this.shadow = new ShadowGenerator(2048, this.sun);
     this.shadow.useBlurExponentialShadowMap = true;
     this.shadow.blurKernel = 24;
+    // Soft contact look: slightly lift shadowed areas so forest interiors
+    // stay readable, and nudge the bias to reduce acne on thin geometry.
+    this.shadow.darkness = 0.35;
+    this.shadow.bias = -0.0004;
 
     this.applyPostProcessing();
     this.apply();
@@ -85,13 +97,14 @@ export class Lighting {
    * Global image look: ACES filmic tone mapping for a consistent, natural
    * color response across all materials, mild contrast, a subtle vignette
    * and bloom for fire/glow sources. One lightweight post chain.
+   * Exposure follows the day cycle (set in apply()).
    */
   private applyPostProcessing(): void {
     const ipc = this.scene.imageProcessingConfiguration;
     ipc.toneMappingEnabled = true;
     ipc.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES;
     ipc.exposure = 1.12;
-    ipc.contrast = 1.06;
+    ipc.contrast = 1.05;
     ipc.vignetteEnabled = true;
     ipc.vignetteWeight = 0.12;
 
@@ -137,7 +150,7 @@ export class Lighting {
     this.sunDir
       .set(Math.cos(az) * 0.55, Math.max(elev, -1), 0.42)
       .normalize();
-    this.moonDir.copyFrom(this.sunDir).scale(-1);
+    this.moonDir.copyFrom(this.sunDir).negateInPlace();
 
     const duskW = clamp(1 - Math.abs(elev) / 0.32, 0, 1) * (elev > -0.3 ? 1 : 0);
     mix3(this.sunColor, NIGHT_SUN, DAY_SUN, dayF);
@@ -153,13 +166,16 @@ export class Lighting {
     mix3(this.hemi.diffuse, NIGHT_TOP, DAY_TOP, dayF);
     mix3(this.hemi.groundColor, NIGHT_GROUND, DAY_GROUND, dayF);
 
-    // Scene fog + clear color follow the sky.
-    const fogC = new Color3();
-    mix3(fogC, NIGHT_SKY_FOG, DAY_SKY_FOG, dayF);
+    // Scene fog + clear color follow the sky, with a warm dusk haze.
+    mix3(this.fogScratch, NIGHT_SKY_FOG, DAY_SKY_FOG, dayF);
+    if (duskW > 0) Color3.LerpToRef(this.fogScratch, DUSK_SKY_FOG, duskW * 0.4, this.fogScratch);
     this.scene.fogMode = Scene.FOGMODE_EXP2;
     this.scene.fogDensity = lerp(0.0038, 0.0022, dayF);
-    this.scene.fogColor = fogC;
-    this.scene.clearColor = new Color4(fogC.r, fogC.g, fogC.b, 1);
+    this.scene.fogColor = this.fogScratch;
+    this.scene.clearColor = this.clearScratch.set(this.fogScratch.r, this.fogScratch.g, this.fogScratch.b, 1);
+
+    // Cinematic exposure: dim at night, bright at noon.
+    this.scene.imageProcessingConfiguration.exposure = lerp(0.84, 1.18, dayF);
 
     // Image-based lighting for all PBR materials follows the sky cycle.
     this.applyEnvironment(dayF);
@@ -170,12 +186,10 @@ export class Lighting {
 
     const sunStrength = 0.25 + dayF * 1.15;
     this.terrainMat.setVector3('sunDir', this.sunDir);
-    const sc = this.sunColor.scale(sunStrength);
+    const sc = this.sunScaledScratch.copyFrom(this.sunColor).scaleInPlace(sunStrength);
     this.terrainMat.setColor3('sunColor', sc);
-    const top = new Color3();
-    mix3(top, NIGHT_TOP, DAY_TOP, dayF);
-    const ground = new Color3();
-    mix3(ground, NIGHT_GROUND, DAY_GROUND, dayF);
+    const top = mix3(this.topScratch, NIGHT_TOP, DAY_TOP, dayF);
+    const ground = mix3(this.groundScratch, NIGHT_GROUND, DAY_GROUND, dayF);
     this.terrainMat.setColor3('ambientTop', top);
     this.terrainMat.setColor3('ambientGround', ground);
   }

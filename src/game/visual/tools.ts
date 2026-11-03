@@ -11,9 +11,9 @@ import type { SharedMaterials } from './materials';
  * Hand tool models (Visual Agent scope).
  *
  * Real multi-part models, not colored boxes: a shaped wooden handle with a
- * grip and butt, a chipped stone head, and a wrapping band where the head
- * meets the haft. Each tool is a TransformNode whose origin sits at the
- * hand position, with the tool extending toward +Y.
+ * grip and butt (turned-cylinder silhouette), a chipped stone head, and a
+ * wrapping band where the head meets the haft. Each tool is a TransformNode
+ * whose origin sits at the hand position, with the tool extending toward +Y.
  */
 
 export type ToolKind = 'stone_axe' | 'stone_pick';
@@ -31,14 +31,31 @@ const box = (
   return m;
 };
 
+/** Turned wooden segment (cylinder with 8 facets reads as round at haft size). */
+const rod = (
+  scene: Scene,
+  name: string,
+  diameter: number,
+  height: number,
+  mat: PBRMaterial,
+): Mesh => {
+  const m = MeshBuilder.CreateCylinder(
+    name,
+    { height, diameterTop: diameter * 0.94, diameterBottom: diameter, tessellation: 8 },
+    scene,
+  );
+  m.material = mat;
+  return m;
+};
+
 /** Wooden shaft: main grip + slightly thicker butt, subtle forward taper. */
 function makeHandle(scene: Scene, wood: PBRMaterial, length: number, thickness = 0.045): TransformNode {
   const root = new TransformNode('handle', scene);
-  const grip = box(scene, 'handleGrip', thickness, length * 0.62, thickness, wood);
+  const grip = rod(scene, 'handleGrip', thickness, length * 0.62, wood);
   grip.position.y = -length * 0.31;
-  const mid = box(scene, 'handleMid', thickness * 1.12, length * 0.4, thickness * 1.12, wood);
+  const mid = rod(scene, 'handleMid', thickness * 1.12, length * 0.4, wood);
   mid.position.y = length * 0.02;
-  const butt = box(scene, 'handleButt', thickness * 1.25, length * 0.1, thickness * 1.25, wood);
+  const butt = rod(scene, 'handleButt', thickness * 1.25, length * 0.1, wood);
   butt.position.y = length * 0.22;
   grip.parent = root;
   mid.parent = root;
