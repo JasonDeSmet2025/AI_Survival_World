@@ -37,6 +37,7 @@ export interface SharedMaterials {
   playerBoots: PBRMaterial;
   playerSkin: PBRMaterial;
   playerHair: PBRMaterial;
+  playerAccent: PBRMaterial;
   backpack: PBRMaterial;
   // buildings + tools
   buildingWood: PBRMaterial;
@@ -94,21 +95,32 @@ export function createSharedMaterials(scene: Scene): SharedMaterials {
   const berry = pbr('berryMat', c(0.42, 0.05, 0.07), 0.35);
 
   // --- player ---------------------------------------------------------------
-  // Muted survival-clothing palette; fabric textures repeat 2x and stay matte.
-  const playerBody = textured('playerBodyMat', kit.fabricShirt, c(1, 1, 1), 0.9);
-  const playerPants = textured('playerPantsMat', kit.fabricPants, c(1, 1, 1), 0.92);
-  const playerBoots = textured('playerBootsMat', kit.fabricBoots, c(1.2, 1.1, 1.0), 0.8);
-  const backpack = textured('backpackMat', kit.fabricPants, c(1.35, 1.15, 0.9), 0.85);
+  // Distinct, muted field-clothing colours keep the character readable in the forest.
+  const playerBody = pbr('playerBodyMat', c(0.28, 0.39, 0.24), 0.9);
+  const playerPants = pbr('playerPantsMat', c(0.24, 0.28, 0.31), 0.92);
+  const playerBoots = pbr('playerBootsMat', c(0.28, 0.16, 0.09), 0.8);
+  const playerAccent = pbr('playerAccentMat', c(0.62, 0.3, 0.13), 0.78);
+  const backpack = pbr('backpackMat', c(0.48, 0.34, 0.19), 0.85);
+  // Subtle fabric-coloured emission keeps the body readable in forest shade
+  // and at night without making the clothes look self-illuminated.
+  playerBody.emissiveColor = c(0.06, 0.09, 0.04);
+  playerPants.emissiveColor = c(0.055, 0.065, 0.075);
+  playerBoots.emissiveColor = c(0.06, 0.035, 0.018);
+  playerAccent.emissiveColor = c(0.07, 0.025, 0.008);
+  backpack.emissiveColor = c(0.09, 0.055, 0.02);
   // Fabric picks up only a little of the environment reflection.
   for (const f of [playerBody, playerPants, playerBoots, backpack]) {
     f.environmentIntensity = 0.7;
   }
   const playerSkin = pbr('playerSkinMat', c(0.82, 0.62, 0.45), 0.55);
+  playerSkin.emissiveColor = c(0.035, 0.02, 0.012);
   const playerHair = pbr('playerHairMat', c(0.16, 0.11, 0.07), 0.95);
 
   // --- buildings + tools -----------------------------------------------------
   const buildingWood = textured('buildingWoodMat', kit.planks, c(1, 1, 1), 0.85);
   const buildingStone = textured('buildingStoneMat', kit.stone, c(1, 1, 1), 1.0);
+  buildingWood.emissiveColor = c(0.055, 0.035, 0.018);
+  buildingStone.emissiveColor = c(0.035, 0.035, 0.03);
   const toolWood = textured('toolWoodMat', kit.toolWood, c(1.1, 1.05, 1.0), 0.55);
   const toolStone = textured('toolStoneMat', kit.toolStone, c(1.05, 1.05, 1.05), 0.7);
 
@@ -139,6 +151,7 @@ export function createSharedMaterials(scene: Scene): SharedMaterials {
     playerBoots,
     playerSkin,
     playerHair,
+    playerAccent,
     backpack,
     buildingWood,
     buildingStone,

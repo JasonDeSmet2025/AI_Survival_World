@@ -19,7 +19,7 @@ export interface BuildingHandle {
   id: string;
   dispose: () => void;
   /** Update campfire state (fuel). */
-  setFuel?: (fuel: number) => void;
+  setFuel?: (fuel: number, time: number) => void;
 }
 
 export interface MeshHandle {
@@ -62,9 +62,13 @@ export class BuildingRenderer {
   private standalone = new Set<string>();
   private fireTex: DynamicTexture | null = null;
   private char: StandardMaterial;
+  private mattress: PBRMaterial | null = null;
+  private pillow: PBRMaterial | null = null;
   private scene: Scene;
   private mats: SharedMaterials;
   private casters: Mesh[] = [];
+  /** Seconds of fire time used for the light flicker (driven by the game loop). */
+  private fireTime = 0;
 
   constructor(scene: Scene, mats: SharedMaterials) {
     this.scene = scene;
@@ -79,6 +83,17 @@ export class BuildingRenderer {
     return this.casters;
   }
 
+  /**
+   * Per-frame campfire state push: light intensity, particle rate and the
+   * ember bed follow the fuel (the fire fades out during its final
+   * seconds and goes fully dark at zero). O(1) map lookup, cheap enough
+   * to run for every fire every frame.
+   */
+  setFireState(id: string, fuel: number, dt: number): void {
+    this.fireTime += dt;
+    this.handles.get(id)?.setFuel?.(fuel, this.fireTime);
+  }
+
   /** Render all buildings not yet present. */
   sync(buildings: BuildingData[]): void {
     for (const b of buildings) {
@@ -91,7 +106,7 @@ export class BuildingRenderer {
         h.dispose();
         this.handles.delete(id);
       } else if (h.setFuel) {
-        h.setFuel(b.fuel ?? 0);
+        h.setFuel(b.fuel ?? 0, this.fireTime);
       }
     }
   }
@@ -105,17 +120,40 @@ export class BuildingRenderer {
 
   /** Ghost preview for a building item the player is about to place. */
   preview(kind: BuildingData['kind'], x: number, z: number, y: number, rot: number): MeshHandle {
+    if (!this.previewHandle || this.previewKind !== kind) {
+      this.disposePreview();
+      this.previewHandle = this.buildMesh(kind, x, z, y, rot, true);
+      this.previewKind = kind;
+      for (const m of this.previewHandle.meshes) m.material = this.mats.ghost;
+    }
+
+    const root = this.previewHandle.meshes[0]?.parent;
+    if (root instanceof TransformNode) {
+      root.position.set(x, y, z);
+      root.rotation.y = (rot / 4) * Math.PI * 2;
+    }
+    return this.previewHandle;
+  }
+
+  setPreviewValid(valid: boolean): void {
+    this.mats.ghost.diffuseColor.set(
+      valid ? 0.42 : 0.72,
+      valid ? 0.62 : 0.16,
+      valid ? 0.48 : 0.12,
+    );
+  }
+
+  clearPreview(): void {
     this.disposePreview();
-    const handle = this.buildMesh(kind, x, z, y, rot, true);
-    for (const m of handle.meshes) m.material = this.mats.ghost;
-    return handle;
   }
 
   private previewHandle: MeshHandle | null = null;
+  private previewKind: BuildingData['kind'] | null = null;
 
   private disposePreview(): void {
     this.previewHandle?.dispose();
     this.previewHandle = null;
+    this.previewKind = null;
   }
 
   // ------------------------------------------------------------------
@@ -147,6 +185,7 @@ export class BuildingRenderer {
       m.rotation.x = rx;
       m.rotation.z = rz;
       m.material = mat;
+      m.receiveShadows = false;
       if (!ghost) m.freezeWorldMatrix();
       meshes.push(m);
       return m;
@@ -154,6 +193,16 @@ export class BuildingRenderer {
 
     const wood = this.mats.buildingWood;
     const stone = this.mats.buildingStone;
+
+    // Bed fabrics (lazily created, shared by all beds).
+    const mattress = (): PBRMaterial => {
+      this.mattress ??= this.makeFabric('bedMat', 0.78, 0.72, 0.6, 0.95);
+      return this.mattress;
+    };
+    const pillow = (): PBRMaterial => {
+      this.pillow ??= this.makeFabric('bedPillowMat', 0.88, 0.85, 0.76, 0.92);
+      return this.pillow;
+    };
 
     switch (kind) {
       case 'wall': {
@@ -215,6 +264,7 @@ export class BuildingRenderer {
           st.rotation.y = rand() * Math.PI;
           st.scaling.set(1, 1, 0.78 + rand() * 0.2);
           st.material = stone;
+          st.receiveShadows = false;
           if (!ghost) st.freezeWorldMatrix();
           meshes.push(st);
         }
@@ -228,6 +278,7 @@ export class BuildingRenderer {
           log.position.set(Math.cos(ang) * 0.16, 0.3, Math.sin(ang) * 0.16);
           log.rotation.set(0.55, ang, 0.3);
           log.material = wood;
+          log.receiveShadows = false;
           if (!ghost) log.freezeWorldMatrix();
           meshes.push(log);
         }
@@ -238,20 +289,61 @@ export class BuildingRenderer {
         hearth.parent = root;
         hearth.position.y = 0.15;
         hearth.material = this.char;
+        hearth.receiveShadows = false;
         if (!ghost) hearth.freezeWorldMatrix();
         meshes.push(hearth);
+        break;
+      }
+      case 'bed': {
+        // Timber frame bed, long axis along local Z (2.3 m), sleeping
+        // surface (mattress top) at y ≈ 0.65 above the building origin.
+        for (const sx of [-1, 1] as const) {
+          for (const sz of [-1, 1] as const) {
+            box(0.12, 0.34, 0.12, wood, sx * 0.42, 0.17, sz * 1.0);
+          }
+        }
+        // Side + end rails.
+        for (const sx of [-1, 1] as const) {
+          box(0.1, 0.14, 2.16, wood, sx * 0.45, 0.4 + (rand() - 0.5) * 0.02, 0);
+        }
+        box(0.8, 0.14, 0.1, wood, 0, 0.4, 1.08);
+        // Headboard: two posts + top rail.
+        for (const sx of [-1, 1] as const) {
+          box(0.1, 0.86, 0.1, wood, sx * 0.45, 0.72, -1.08);
+        }
+        box(0.9, 0.12, 0.1, wood, 0, 1.14, -1.08);
+        // Plank base.
+        for (let i = 0; i < 4; i++) {
+          box(0.86, 0.05, 0.5, wood, (rand() - 0.5) * 0.03, 0.48, -0.75 + i * 0.5);
+        }
+        // Mattress + pillow at the head (-Z) end.
+        box(0.9, 0.16, 2.06, mattress(), 0, 0.58, 0);
+        box(0.55, 0.11, 0.38, pillow(), (rand() - 0.5) * 0.05, 0.69, -0.72);
         break;
       }
     }
 
     const dispose = () => {
-      root.dispose(true);
+      // NOTE: in Babylon 9.33 the first dispose argument is `doNotRecurse`,
+      // so `dispose(true)` would leak every child mesh (and the shadow
+      // caster list would keep dead meshes). Bare call recurses.
+      root.dispose();
       this.casters = this.casters.filter((m) => !meshes.includes(m));
     };
     if (!ghost) {
       for (const m of meshes) this.casters.push(m);
     }
     return { meshes, dispose };
+  }
+
+  /** Simple flat-colour PBR fabric for bed parts (no texture needed at this scale). */
+  private makeFabric(name: string, r: number, g: number, b: number, roughness: number): PBRMaterial {
+    const m = new PBRMaterial(name, this.scene);
+    m.albedoColor = new Color3(r, g, b);
+    m.metallic = 0;
+    m.roughness = roughness;
+    m.environmentIntensity = 0.7;
+    return m;
   }
 
   // ------------------------------------------------------------------
@@ -308,16 +400,19 @@ export class BuildingRenderer {
         if (this.fireTex && !this.handles.size) this.fireTex.dispose();
         handle.dispose();
       },
-      setFuel: (fuel: number) => {
+      setFuel: (fuel: number, time: number) => {
         if (light && particles) {
-          const flicker = 0.85 + 0.15 * Math.sin(Date.now() * 0.02 + b.x);
-          light.intensity = fuel > 0 ? 1.1 * flicker : 0;
-          particles.emitRate = fuel > 0 ? 60 : 0;
-          if (ember) ember.setEnabled(fuel > 0);
+          // Two offset sines read as organic flame flicker.
+          const flicker = 0.85 + 0.1 * Math.sin(time * 7.3 + b.x) + 0.05 * Math.sin(time * 13.1 + b.z);
+          // The fire dims during its final seconds of fuel.
+          const fade = fuel > 0 ? Math.min(1, fuel / 45) : 0;
+          light.intensity = 1.1 * flicker * fade;
+          particles.emitRate = 60 * fade;
+          if (ember) ember.setEnabled(fade > 0.2);
         }
       },
     });
-    this.handles.get(b.id)?.setFuel?.(b.fuel ?? 0);
+    this.handles.get(b.id)?.setFuel?.(b.fuel ?? 0, this.fireTime);
   }
 }
 

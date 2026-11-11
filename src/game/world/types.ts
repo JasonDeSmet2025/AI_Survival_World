@@ -28,7 +28,7 @@ export interface ResourceNode {
 /** A player-placed building tracked by the world state. */
 export interface BuildingData {
   id: string;
-  kind: 'campfire' | 'wall' | 'floor' | 'roof';
+  kind: 'campfire' | 'wall' | 'floor' | 'roof' | 'bed';
   x: number;
   z: number;
   y: number;

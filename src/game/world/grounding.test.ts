@@ -4,8 +4,8 @@ import {
   SEA_LEVEL,
   TERRAIN_SIZE,
   terrainHeight,
-  minTerrainHeightInRadius,
 } from './heightfield';
+import { minSurfaceHeightInRadius } from './groundSurface';
 
 /**
  * Ground-contact radius per kind, as a multiple of the instance scale.
@@ -32,9 +32,16 @@ describe('flora grounding', () => {
     }
   });
 
-  it('seats every object base on or above the lowest ground within its footprint (no floating)', () => {
+  it('seats every object base on or below the highest of the lowest RENDERED grounds within its footprint (no floating over dips)', () => {
+    // The guarantee that matters visually: the base is never lifted above
+    // the lowest visible ground inside the footprint (no floating over dips
+    // on slopes). It may sit slightly BELOW that lowest point — that is the
+    // intentional trunk/rock embed (baseSink) and the sink cap, so the
+    // object never vanishes into steep ground. Evaluated on the rendered
+    // mesh, because on slopes it can sit up to ~0.5-0.8u off the analytic
+    // curve and an analytic-only check would miss floating objects.
     for (const p of placements) {
-      const lowest = minTerrainHeightInRadius(p.x, p.z, (FOOTPRINT[p.kind] ?? 0.2) * p.scale);
+      const lowest = minSurfaceHeightInRadius(p.x, p.z, (FOOTPRINT[p.kind] ?? 0.2) * p.scale);
       expect(lowest).toBeGreaterThanOrEqual(p.y - p.sink - 1e-9);
     }
   });

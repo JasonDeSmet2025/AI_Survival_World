@@ -1,6 +1,5 @@
 import {
   AbstractMesh,
-  BloomEffect,
   Color3,
   Color4,
   DirectionalLight,
@@ -27,9 +26,9 @@ const NIGHT_SKY_FOG = new Color3(0.035, 0.055, 0.1);
 // Warm haze that creeps in around sunrise/sunset for a Valheim-style mood.
 const DUSK_SKY_FOG = new Color3(0.58, 0.45, 0.36);
 const DAY_TOP = new Color3(0.34, 0.4, 0.5);
-const NIGHT_TOP = new Color3(0.05, 0.07, 0.13);
+const NIGHT_TOP = new Color3(0.2, 0.23, 0.3);
 const DAY_GROUND = new Color3(0.22, 0.2, 0.16);
-const NIGHT_GROUND = new Color3(0.02, 0.03, 0.06);
+const NIGHT_GROUND = new Color3(0.12, 0.14, 0.18);
 
 function mix3(out: Color3, a: Color3, b: Color3, t: number): Color3 {
   Color3.LerpToRef(a, b, t, out);
@@ -51,7 +50,12 @@ export class Lighting {
   private shadow: ShadowGenerator;
   private sky: Sky;
   private water: Water;
-  private terrainMat: ShaderMaterial;
+  /**
+   * Custom ShaderMaterials that mirror the engine's sun/ambient cycle
+   * (terrain always; the flora wind shader registers itself too). The
+   * built-in engine lights still serve the standard/PBR meshes.
+   */
+  private shaderMats: ShaderMaterial[];
   private scene: Scene;
   private envPresets: ReturnType<typeof createEnvironmentPresets>;
   private currentEnv: EnvironmentPreset | null = null;
@@ -74,7 +78,7 @@ export class Lighting {
     this.scene = scene;
     this.sky = sky;
     this.water = water;
-    this.terrainMat = terrainMat;
+    this.shaderMats = [terrainMat];
     this.elapsed = startT * DAY_LENGTH;
     this.envPresets = createEnvironmentPresets(scene.getEngine());
 
@@ -84,10 +88,21 @@ export class Lighting {
     this.shadow = new ShadowGenerator(2048, this.sun);
     this.shadow.useBlurExponentialShadowMap = true;
     this.shadow.blurKernel = 24;
-    // Soft contact look: slightly lift shadowed areas so forest interiors
-    // stay readable, and nudge the bias to reduce acne on thin geometry.
-    this.shadow.darkness = 0.35;
+    // Keep tree shadows soft enough that dense forest canopies do not read
+    // as holes in the terrain, while preserving visible contact shadows.
+    this.shadow.darkness = 0.7;
     this.shadow.bias = -0.0004;
+    // Fixed, player-following shadow frustum. Without this the directional
+    // light uses auto-extent: the 2048 px map would stretch over the whole
+    // 640u world (~3 px/unit) now that the flora chunks are casters.
+    // A 130u box around the player keeps ~15 px/unit resolution; the box
+    // depth spans both sides of the player so trees between the sun and
+    // the player still cast onto visible ground. Shadows fade out at the
+    // box edges (frustumEdgeFalloff) so the boundary is never visible.
+    this.sun.shadowFrustumSize = 130;
+    this.sun.shadowMinZ = -150;
+    this.sun.shadowMaxZ = 400;
+    this.shadow.frustumEdgeFalloff = 0.4;
 
     this.applyPostProcessing();
     this.apply();
@@ -96,8 +111,12 @@ export class Lighting {
   /**
    * Global image look: ACES filmic tone mapping for a consistent, natural
    * color response across all materials, mild contrast, a subtle vignette
-   * and bloom for fire/glow sources. One lightweight post chain.
-   * Exposure follows the day cycle (set in apply()).
+   * and anti-banding dither. Exposure follows the day cycle (set in
+   * apply()).
+   *
+   * NOTE: bloom lives in PostFx (visual/postfx.ts) — in Babylon 9.33 a
+   * standalone BloomEffect only renders when it is attached to a
+   * PostProcessRenderPipeline registered on the scene's manager.
    */
   private applyPostProcessing(): void {
     const ipc = this.scene.imageProcessingConfiguration;
@@ -107,9 +126,10 @@ export class Lighting {
     ipc.contrast = 1.05;
     ipc.vignetteEnabled = true;
     ipc.vignetteWeight = 0.12;
-
-    const bloom = new BloomEffect(this.scene, 32, 0.45, 16);
-    bloom.threshold = 0.78;
+    // Anti-banding dither for the 8-bit LDR output. The custom shaders
+    // (terrain/water/sky/atmosphere) mirror this exact setting through
+    // syncColorPipeline, so built-in and custom materials dither identically.
+    ipc.ditheringEnabled = true;
   }
 
   get timeOfDay(): number {
@@ -135,6 +155,16 @@ export class Lighting {
     this.shadow.removeShadowCaster(mesh, includeDescendants);
   }
 
+  /**
+   * Register an additional custom ShaderMaterial that receives the live
+   * sun direction/colour and hemisphere ambient values every frame
+   * (same uniform names as the terrain shader: sunDir, sunColor,
+   * ambientTop, ambientGround). Idempotent.
+   */
+  addShaderMaterial(mat: ShaderMaterial): void {
+    if (!this.shaderMats.includes(mat)) this.shaderMats.push(mat);
+  }
+
   update(dt: number): void {
     this.elapsed += dt;
     this.apply();
@@ -152,6 +182,12 @@ export class Lighting {
       .normalize();
     this.moonDir.copyFrom(this.sunDir).negateInPlace();
 
+    // The directional shadow camera sits at sun.position (direction alone
+    // does not light a directional light), so tracking the active camera
+    // keeps the fixed shadow frustum centred on the player while walking.
+    const cam = this.scene.activeCamera;
+    if (cam) this.sun.position.set(cam.position.x, 0, cam.position.z);
+
     const duskW = clamp(1 - Math.abs(elev) / 0.32, 0, 1) * (elev > -0.3 ? 1 : 0);
     mix3(this.sunColor, NIGHT_SUN, DAY_SUN, dayF);
     if (duskW > 0) mix3(this.sunColor, this.sunColor, DUSK_SUN, duskW * 0.85);
@@ -162,7 +198,7 @@ export class Lighting {
     mix3(this.sun.diffuse, NIGHT_SUN, DAY_SUN, dayF);
     if (duskW > 0) mix3(this.sun.diffuse, this.sun.diffuse, DUSK_SUN, duskW * 0.8);
 
-    this.hemi.intensity = 0.1 + dayF * 0.5;
+    this.hemi.intensity = 0.32 + dayF * 0.48;
     mix3(this.hemi.diffuse, NIGHT_TOP, DAY_TOP, dayF);
     mix3(this.hemi.groundColor, NIGHT_GROUND, DAY_GROUND, dayF);
 
@@ -175,7 +211,7 @@ export class Lighting {
     this.scene.clearColor = this.clearScratch.set(this.fogScratch.r, this.fogScratch.g, this.fogScratch.b, 1);
 
     // Cinematic exposure: dim at night, bright at noon.
-    this.scene.imageProcessingConfiguration.exposure = lerp(0.84, 1.18, dayF);
+    this.scene.imageProcessingConfiguration.exposure = lerp(0.95, 1.18, dayF);
 
     // Image-based lighting for all PBR materials follows the sky cycle.
     this.applyEnvironment(dayF);
@@ -184,14 +220,16 @@ export class Lighting {
     this.water.syncSun(this.sunDir, this.sunColor);
     this.sky.setDay(this.sunDir, this.moonDir, dayF);
 
-    const sunStrength = 0.25 + dayF * 1.15;
-    this.terrainMat.setVector3('sunDir', this.sunDir);
+    const sunStrength = 0.32 + dayF * 1.08;
     const sc = this.sunScaledScratch.copyFrom(this.sunColor).scaleInPlace(sunStrength);
-    this.terrainMat.setColor3('sunColor', sc);
     const top = mix3(this.topScratch, NIGHT_TOP, DAY_TOP, dayF);
     const ground = mix3(this.groundScratch, NIGHT_GROUND, DAY_GROUND, dayF);
-    this.terrainMat.setColor3('ambientTop', top);
-    this.terrainMat.setColor3('ambientGround', ground);
+    for (const mat of this.shaderMats) {
+      mat.setVector3('sunDir', this.sunDir);
+      mat.setColor3('sunColor', sc);
+      mat.setColor3('ambientTop', top);
+      mat.setColor3('ambientGround', ground);
+    }
   }
 
   /**

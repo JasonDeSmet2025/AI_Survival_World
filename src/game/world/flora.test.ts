@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { Color3, NullEngine, PBRMaterial, Scene } from '@babylonjs/core';
+import { Color3, Mesh, NullEngine, PBRMaterial, Scene, VertexBuffer } from '@babylonjs/core';
 import {
+  FLORA_CHUNKS_PER_AXIS,
   FLORA_VARIANTS,
   genPlacements,
+  floraChunk,
   forestMask,
   populateFlora,
 } from './flora';
 import { SharedWorldState } from './worldState';
 import type { Collider } from './types';
-import { SEA_LEVEL, terrainSlope } from './terrain';
+import { SEA_LEVEL, TERRAIN_SIZE, terrainSlope } from './terrain';
 import type { SharedMaterials } from '../visual/materials';
 
 const countBy = (placements: ReturnType<typeof genPlacements>, kind: string) =>
@@ -95,6 +97,7 @@ describe('genPlacements', () => {
           break;
         case 'rock':
           expect(p.y).toBeGreaterThanOrEqual(0.4);
+          expect(p.scale).toBeLessThanOrEqual(0.95);
           break;
         case 'bush':
           expect(p.y).toBeGreaterThanOrEqual(0.6);
@@ -127,7 +130,17 @@ describe('genPlacements', () => {
 });
 
 describe('populateFlora', () => {
-  it('builds instanced visuals and registers gatherable nodes (NullEngine)', () => {
+  // populateFlora builds ~9500 placements plus 27 merged prototypes and the
+  // chunk bakes from scratch; on loaded CI machines this legitimately exceeds
+  // the default 5s vitest limit, so give it an explicit budget.
+  const verts = (m: { getVerticesData: (k: string) => unknown }) =>
+    ((m.getVerticesData(VertexBuffer.PositionKind) as Float32Array) ?? new Float32Array(0)).length / 3;
+  const chunkName = (kind: string, x: number, z: number) => {
+    const { cx, cz } = floraChunk(x, z);
+    return `flora_${kind}_c${cx}_${cz}`;
+  };
+
+  it('bakes every placement into (kind, chunk) batch meshes and registers nodes (NullEngine)', () => {
     const engine = new NullEngine();
     const scene = new Scene(engine);
     // Lightweight PBR materials for NullEngine tests.
@@ -178,30 +191,160 @@ describe('populateFlora', () => {
     const rockCount = placements.filter((p) => p.kind === 'rock').length;
     expect(colliders.length).toBe(rockCount);
 
-    // Instanced meshes exist for every placement (one instance per placement).
-    const instances = scene.meshes.filter((m) => /^[a-z]+_\d+_\d+$/.test(m.name));
-    expect(instances.length).toBe(placements.length);
+    // Chunked batches: at most 3 detail levels for the 5 LOD kinds plus one
+    // level for the 2 single-detail kinds (grass/flower), per chunk pair.
+    const chunks = scene.meshes.filter((m) => m.name.startsWith('flora_'));
+    expect(chunks.length).toBeGreaterThan(0);
+    expect(chunks.length).toBeLessThan(placements.length);
+    expect(chunks.length).toBeLessThanOrEqual((3 * 5 + 1 * 2) * FLORA_CHUNKS_PER_AXIS * FLORA_CHUNKS_PER_AXIS);
 
-    // Initial state: everything enabled and full scale after applyState.
-    handle.applyState();
-    for (const m of scene.meshes) {
-      if (!m.name.endsWith('_proto')) expect(m.isEnabled()).toBe(true);
+    const colorMesh = chunks[0] as Mesh;
+    const colors = colorMesh
+      .getVertexBuffer(VertexBuffer.ColorKind)
+      ?.getFloatData(colorMesh.getTotalVertices());
+    expect(colors?.length).toBe(colorMesh.getTotalVertices() * 4);
+    if (!colors) throw new Error('Flora color buffer is missing');
+    let opaque = true;
+    for (let i = 3; i < colors.length; i += 4) opaque &&= colors[i] === 1;
+    expect(opaque).toBe(true);
+
+    const rockMesh = chunks.find((m) => /^flora_rock_c\d+_\d+$/.test(m.name));
+    if (!rockMesh) throw new Error('Baked rock mesh is missing');
+    const rockColors = rockMesh
+      .getVertexBuffer(VertexBuffer.ColorKind)
+      ?.getFloatData(rockMesh.getTotalVertices());
+    if (!rockColors) throw new Error('Rock vertex colors are missing');
+    let brightestRockChannel = 0;
+    for (let i = 0; i < rockColors.length; i += 4) {
+      brightestRockChannel = Math.max(
+        brightestRockChannel,
+        rockColors[i],
+        rockColors[i + 1],
+        rockColors[i + 2],
+      );
+    }
+    expect(brightestRockChannel).toBeLessThan(0.75);
+
+    for (const mesh of chunks as Mesh[]) {
+      const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
+      if (!positions) throw new Error(`Position buffer is missing for ${mesh.name}`);
+      let maxAbsX = 0;
+      let maxAbsZ = 0;
+      for (let i = 0; i < positions.length; i += 3) {
+        maxAbsX = Math.max(maxAbsX, Math.abs(positions[i]));
+        maxAbsZ = Math.max(maxAbsZ, Math.abs(positions[i + 2]));
+      }
+      expect(maxAbsX, mesh.name).toBeLessThan(TERRAIN_SIZE / 2 + 10);
+      expect(maxAbsZ, mesh.name).toBeLessThan(TERRAIN_SIZE / 2 + 10);
     }
 
-    // Depleted nodes hide their instance; partial damage shrinks it.
+    // Every placement has its (kind, chunk) batch mesh present and enabled.
+    for (const p of placements) {
+      const m = scene.meshes.find((x) => x.name === chunkName(p.kind, p.x, p.z));
+      expect(m, `missing chunk mesh ${chunkName(p.kind, p.x, p.z)}`).toBeDefined();
+      if (m) {
+        expect(m.isEnabled()).toBe(true);
+        expect(m.isPickable).toBe(false);
+        // Colour buffer exists for the shared flora material (CPU readback of
+        // colours is a known v9.33 limitation, so only assert existence).
+        expect((m as Mesh).getVerticesDataKinds().includes(VertexBuffer.ColorKind)).toBe(true);
+      }
+    }
+
+    // Initial state: a fresh applyState is a no-op (no re-bake, same meshes).
+    const before = new Map(chunks.map((c) => [c.name, verts(c)]));
+    handle.applyState();
+    const afterNoOp = new Map(
+      scene.meshes.filter((m) => m.name.startsWith('flora_')).map((c) => [c.name, verts(c)]),
+    );
+    expect(afterNoOp.size).toBe(before.size);
+    for (const [n, v] of before) expect(afterNoOp.get(n)).toBe(v);
+
+    // chunkMeshes() exposes the live batch meshes (hi + mid + lo) for QA;
+    // shadow-caster registration uses shadowCasters() (see game.ts).
+    const liveBefore = handle.chunkMeshes();
+    expect(liveBefore.length).toBe(chunks.length);
+    expect(new Set(liveBefore).size).toBe(liveBefore.length); // no duplicates
+    for (const m of liveBefore) expect(m.name).toMatch(/^flora_\w+_c\d+_\d+(_mid|_lo)?$/);
+
+    // Depleted nodes are removed from their batch (fewer vertices); partial
+    // damage re-bakes the chunk with a smaller scale (same topology).
     const someRock = state.nodes.find((n) => n.kind === 'rock')!;
     const someTree = state.nodes.find((n) => n.kind === 'tree')!;
+    const rockName = chunkName('rock', someRock.x, someRock.z);
+    const treeName = chunkName('tree', someTree.x, someTree.z);
+    const rockBefore = verts(scene.meshes.find((m) => m.name === rockName)!);
+    const treeBefore = verts(scene.meshes.find((m) => m.name === treeName)!);
+    const treeChunkMeshBefore = scene.meshes.find((m) => m.name === treeName);
     state.damageNode(someTree.id, 1); // partial
     state.damageNode(someRock.id, 99); // depleted
     handle.applyState();
 
-    const rockInst = scene.meshes.find((m) => m.name.startsWith('rock_') && m.isEnabled() === false);
-    expect(rockInst).toBeDefined();
-    const treeInst = scene.meshes.find(
-      (m) => m.name.startsWith('tree_') && m.isEnabled() && m.scaling.x < 1.4,
-    );
-    expect(treeInst).toBeDefined();
+    const rockAfter = scene.meshes.find((m) => m.name === rockName);
+    const treeAfter = scene.meshes.find((m) => m.name === treeName);
+    // The rock's chunk still exists if other rocks share it; either way the
+    // depleted instance's vertices are gone (or the whole batch vanished).
+    expect(rockAfter === undefined || verts(rockAfter) < rockBefore).toBe(true);
+    expect(rockAfter?.isEnabled()).not.toBe(false);
+    expect(treeAfter).toBeDefined();
+    if (treeAfter) {
+      expect(treeAfter.isEnabled()).toBe(true);
+      expect(verts(treeAfter)).toBe(treeBefore); // shrink is baked, topology kept
+    }
+
+    // Colliders are world state, not geometry: re-baking never touches them.
+    expect(colliders.length).toBe(rockCount);
+
+    // After the re-bake above, chunkMeshes() reflects the NEW mesh instances
+    // (the re-baked chunk replaced its old mesh; the handle tracks the live
+    // ones, so game.ts can swap them in the shadow generator).
+    const liveAfter = handle.chunkMeshes();
+    expect(liveAfter.length).toBeGreaterThan(0);
+    const treeMeshAfter = liveAfter.find((m) => m.name === treeName);
+    expect(treeMeshAfter).toBeDefined();
+    expect(treeMeshAfter).toBe(scene.meshes.find((m) => m.name === treeName)); // scene instance
+    expect(treeMeshAfter).not.toBe(treeChunkMeshBefore); // re-bake replaced it
 
     engine.dispose();
-  });
+  }, 20000);
+
+  it('is deterministic: identical chunk layout, vertex counts and node ids per seed', () => {
+    const mk = () => {
+      const engine = new NullEngine();
+      const scene = new Scene(engine);
+      const material = new PBRMaterial('m', scene);
+      material.roughness = 0.9;
+      material.metallic = 0;
+      const mats = Object.fromEntries(
+        ['bark', 'leaf', 'pineLeaf', 'rock', 'bushLeaf', 'berry', 'grass', 'flower'].map((k) => [
+          k,
+          material,
+        ]),
+      ) as unknown as SharedMaterials;
+      const state = new SharedWorldState();
+      populateFlora(scene, mats, state, []);
+      return { engine, scene, state };
+    };
+    const a = mk();
+    const b = mk();
+
+    const mapA = new Map(
+      a.scene.meshes.filter((m) => m.name.startsWith('flora_')).map((c) => [c.name, verts(c)]),
+    );
+    const mapB = new Map(
+      b.scene.meshes.filter((m) => m.name.startsWith('flora_')).map((c) => [c.name, verts(c)]),
+    );
+    expect(mapA.size).toBe(mapB.size);
+    for (const [n, v] of mapA) expect(mapB.get(n)).toBe(v);
+
+    expect(
+      JSON.stringify(a.state.nodes.map((n) => n.id)),
+    ).toBe(JSON.stringify(b.state.nodes.map((n) => n.id)));
+    expect(
+      JSON.stringify(a.state.nodes.map((n) => [n.x, n.z, n.y, n.radius, n.maxHp])),
+    ).toBe(JSON.stringify(b.state.nodes.map((n) => [n.x, n.z, n.y, n.radius, n.maxHp])));
+
+    a.engine.dispose();
+    b.engine.dispose();
+  }, 20000);
 });

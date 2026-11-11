@@ -18,7 +18,7 @@ export interface MpHello {
   players: RemotePlayer[];
   seed: number;
   buildings: Array<{
-    id: string; kind: 'campfire' | 'wall' | 'floor' | 'roof';
+    id: string; kind: 'campfire' | 'wall' | 'floor' | 'roof' | 'bed';
     x: number; z: number; y: number; rot: number; ownerId: string; fuel?: number;
   }>;
   depleted: string[];

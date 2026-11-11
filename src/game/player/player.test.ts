@@ -20,10 +20,34 @@ const PARTS = [
   'playerPart_neck',
   'playerPart_head',
   'playerPart_hair',
+  'playerPart_eyeL',
+  'playerPart_eyeR',
+  'playerPart_nose',
+  'playerPart_earL',
+  'playerPart_earR',
   // backpack
   'playerPart_pack',
   'playerPart_flap',
   'playerPart_roll',
+  'playerPart_packStrapL',
+  'playerPart_packStrapR',
+  'playerPart_packPouchL',
+  'playerPart_packPouchR',
+  'playerPart_packPatch',
+  // clothing details
+  'playerPart_collarL',
+  'playerPart_collarR',
+  'playerPart_pocketL',
+  'playerPart_pocketR',
+  'playerPart_pocketFlapL',
+  'playerPart_pocketFlapR',
+  'playerPart_zipper',
+  'playerPart_belt',
+  'playerPart_buckle',
+  'playerPart_kneePadL',
+  'playerPart_kneePadR',
+  'playerPart_toeCapL',
+  'playerPart_toeCapR',
   // arms
   'playerPart_shoulderL',
   'playerPart_shoulderR',
@@ -31,6 +55,8 @@ const PARTS = [
   'playerPart_upperArmR',
   'playerPart_foreArmL',
   'playerPart_foreArmR',
+  'playerPart_cuffL',
+  'playerPart_cuffR',
   'playerPart_handL',
   'playerPart_handR',
   // legs + feet
@@ -56,6 +82,7 @@ function makeTestMaterials(scene: Scene): SharedMaterials {
     playerBoots: pbr('tBoots', new Color3(0.3, 0.2, 0.12)),
     playerSkin: pbr('tSkin', new Color3(0.8, 0.65, 0.5)),
     playerHair: pbr('tHair', new Color3(0.15, 0.1, 0.06)),
+    playerAccent: pbr('tAccent', new Color3(0.62, 0.3, 0.13)),
     backpack: pbr('tPack', new Color3(0.45, 0.35, 0.2)),
     toolWood: pbr('tToolWood', new Color3(0.5, 0.35, 0.2)),
     toolStone: pbr('tToolStone', new Color3(0.5, 0.5, 0.5)),
@@ -116,6 +143,28 @@ describe('PlayerCharacter geometry', () => {
     expect(pivot?.parent?.name).toBe('playerTorso');
     const armR = descendantMeshes(char).find((m) => m.name === 'playerPart_upperArmR');
     expect((armR!.parent as TransformNode)?.parent?.name).toBe('playerTorso');
+  });
+
+  it('connects the jacket torso to the trouser waist without a visible gap', () => {
+    const { char } = makeCharacter();
+    for (let i = 0; i < 60; i++) char.update(1 / 30, 0, true, false, false);
+    char.root.computeWorldMatrix(true);
+
+    const parts = new Map(descendantMeshes(char).map((mesh) => [mesh.name, mesh]));
+    const torso = parts.get('playerPart_torso')!;
+    const waist = parts.get('playerPart_waist')!;
+    torso.computeWorldMatrix(true);
+    waist.computeWorldMatrix(true);
+    expect(torso.getBoundingInfo().boundingBox.minimumWorld.y)
+      .toBeLessThan(waist.getBoundingInfo().boundingBox.maximumWorld.y);
+  });
+
+  it('uses contrasting materials for the jacket, trousers, and survival-gear accents', () => {
+    const { char } = makeCharacter();
+    const parts = new Map(descendantMeshes(char).map((mesh) => [mesh.name, mesh]));
+    expect(parts.get('playerPart_torso')!.material).not.toBe(parts.get('playerPart_waist')!.material);
+    expect(parts.get('playerPart_buckle')!.material).not.toBe(parts.get('playerPart_belt')!.material);
+    expect(parts.get('playerPart_packPatch')!.material).not.toBe(parts.get('playerPart_pack')!.material);
   });
 
   it('keeps every body part visible and feet grounded through all poses', () => {
@@ -198,5 +247,171 @@ describe('PlayerCharacter geometry', () => {
     // would mean doNotRecurse and leak the whole character).
     expect(scene.meshes.length).toBe(0);
     for (const m of meshes) expect(m.isDisposed(), `part ${m.name} leaked`).toBe(true);
+  });
+
+  it('sleep blend lays the body down on its back and back up again', () => {
+    const { char } = makeCharacter();
+    // Settle the idle pose first.
+    for (let i = 0; i < 60; i++) char.update(1 / 30, 0, true, false, false);
+    const headIdle = absoluteY(char, 'playerPart_head');
+
+    // Lie down.
+    for (let i = 0; i < 90; i++) {
+      char.update(1 / 30, 0, true, false, false, false, false, false, true);
+    }
+    expect(char.sleepPivot.rotation.x).toBeCloseTo(-Math.PI / 2, 2);
+    const headLying = absoluteY(char, 'playerPart_head');
+    // The head drops from ~1.8 m to body-thickness height (the body has no
+    // vertical extent while lying: its centre line sits at the root height).
+    expect(headLying).toBeLessThan(headIdle - 1.0);
+    expect(headLying).toBeGreaterThan(-0.2);
+    // ...while the feet (boots) stay at the root (the bed's foot end).
+    expect(absoluteY(char, 'playerPart_bootL')).toBeCloseTo(0.04, 1);
+    expect(absoluteY(char, 'playerPart_bootR')).toBeCloseTo(0.04, 1);
+
+    // The body must lie along the ground axis, not stand up: the head is
+    // far from the hips along local -Z (world Z here) at the same height.
+    const headMesh = descendantMeshes(char).find((m) => m.name === 'playerPart_head')!;
+    headMesh.computeWorldMatrix(true);
+    const headLyingZ = headMesh.getAbsolutePosition().z;
+    const hipsMesh = descendantMeshes(char).find((m) => m.name === 'playerPart_waist')!;
+    hipsMesh.computeWorldMatrix(true);
+    const hipsPos = hipsMesh.getAbsolutePosition();
+    expect(Math.abs(headLying - hipsPos.y)).toBeLessThan(0.25);
+    expect(Math.abs(hipsPos.z - headLyingZ)).toBeGreaterThan(0.8);
+    // The face points up: nothing of the body sinks below the back plane
+    // (margins account for the part radii around the centre line).
+    expect(headLying).toBeGreaterThan(-0.3);
+
+    // Sit back up: the blend fully recovers the standing height.
+    for (let i = 0; i < 120; i++) char.update(1 / 30, 0, true, false, false);
+    expect(char.sleepPivot.rotation.x).toBeCloseTo(0, 3);
+    expect(absoluteY(char, 'playerPart_head')).toBeCloseTo(headIdle, 1);
+  });
+
+  it('sleeping rotates in the character local frame (follows the root yaw)', () => {
+    const { char } = makeCharacter();
+    char.root.rotation.y = Math.PI / 2; // facing +X
+    for (let i = 0; i < 90; i++) {
+      char.update(1 / 30, 0, true, false, false, false, false, false, true);
+    }
+    char.root.computeWorldMatrix(true);
+    const head = descendantMeshes(char).find((m) => m.name === 'playerPart_head')!;
+    head.computeWorldMatrix(true);
+    const headPos = head.getAbsolutePosition();
+    // Feet at the root (origin); the body lies along local -Z, which at
+    // yaw π/2 maps to world -X. It must extend horizontally, not upright.
+    expect(Math.abs(headPos.y)).toBeLessThan(1.0);
+    expect(Math.abs(headPos.x) + Math.abs(headPos.z)).toBeGreaterThan(1.0);
+  });
+
+  it('landing dip lowers the body and keeps the boots on the ground, then fully recovers', () => {
+    const { char } = makeCharacter();
+    // Settle the idle pose.
+    for (let i = 0; i < 60; i++) char.update(1 / 30, 0, true, false, false);
+    const headIdle = absoluteY(char, 'playerPart_head');
+    const bootIdle = absoluteY(char, 'playerPart_bootL');
+
+    // Landing window (the game shell passes landing=true for ~0.3 s after
+    // an impact, here 12 frames = 0.4 s at 30 fps for full blend-in).
+    for (let i = 0; i < 12; i++) {
+      char.update(1 / 30, 0, true, false, false, false, false, false, false, true);
+    }
+    const headDip = absoluteY(char, 'playerPart_head');
+    const bootDip = absoluteY(char, 'playerPart_bootL');
+    // The whole body dips (hips drive head + boots)...
+    expect(headDip).toBeLessThan(headIdle - 0.025);
+    // ...but the boots stay on the ground (the knee flex absorbs the dip).
+    expect(bootDip).toBeGreaterThanOrEqual(-0.02);
+    expect(bootDip).toBeLessThan(bootIdle - 0.01);
+
+    // Recovery: the standing pose is fully restored once the window ends.
+    for (let i = 0; i < 120; i++) char.update(1 / 30, 0, true, false, false);
+    expect(absoluteY(char, 'playerPart_head')).toBeCloseTo(headIdle, 2);
+    expect(absoluteY(char, 'playerPart_bootL')).toBeCloseTo(bootIdle, 2);
+  });
+
+  it('landing dip works while walking (pose-independent additive blend)', () => {
+    const { char } = makeCharacter();
+    for (let i = 0; i < 60; i++) char.update(1 / 30, 4.5, true, false, false);
+    for (let i = 0; i < 12; i++) {
+      char.update(1 / 30, 4.5, true, false, false, false, false, false, false, true);
+    }
+    const bootDip = absoluteY(char, 'playerPart_bootL');
+    expect(bootDip).toBeGreaterThanOrEqual(-0.04); // no visible boot clip
+    for (let i = 0; i < 90; i++) char.update(1 / 30, 4.5, true, false, false);
+  });
+
+  it('landing dip is suppressed while sleeping', () => {
+    const { char } = makeCharacter();
+    for (let i = 0; i < 60; i++) char.update(1 / 30, 0, true, false, false);
+    const headIdle = absoluteY(char, 'playerPart_head');
+    // Sleeping + a (stale) landing flag at the same time: no dip.
+    for (let i = 0; i < 30; i++) {
+      char.update(1 / 30, 0, true, false, false, false, false, false, true, true);
+    }
+    expect(char.sleepPivot.rotation.x).toBeCloseTo(-Math.PI / 2, 2);
+    // The head height is governed by the lie-down pivot only: a standing
+    // dip on top of it would show as an extra drop — check the hips dip
+    // component is zero by comparing against a pure-sleep control.
+    const { char: control } = makeCharacter();
+    for (let i = 0; i < 30; i++) control.update(1 / 30, 0, true, false, false, false, false, false, true, false);
+    expect(absoluteY(char, 'playerPart_head')).toBeCloseTo(absoluteY(control, 'playerPart_head'), 3);
+    expect(headIdle).toBeGreaterThan(absoluteY(char, 'playerPart_head'));
+  });
+});
+
+describe('cooking pose', () => {
+  /** World-space position of a named part (cloned — Babylon reuses the returned vector). */
+  function pos(char: PlayerCharacter, name: string) {
+    char.root.computeWorldMatrix(true);
+    const m = descendantMeshes(char).find((x) => x.name === name)!;
+    m.computeWorldMatrix(true);
+    return m.getAbsolutePosition().clone();
+  }
+
+  it('extends both hands forward-up over the fire and leans the torso', () => {
+    const { char } = makeCharacter();
+    for (let i = 0; i < 60; i++) char.update(1 / 30, 0, true, false, false);
+    const handR0 = pos(char, 'playerPart_handR');
+    const handL0 = pos(char, 'playerPart_handL');
+    const head0 = pos(char, 'playerPart_head');
+
+    // Cooking = 11th update parameter.
+    for (let i = 0; i < 90; i++) {
+      char.update(1 / 30, 0, true, false, false, false, false, false, false, false, true);
+    }
+
+    // The character faces local +Z at yaw 0, so "over the fire" means
+    // forward (+z) and up to fire level from the idle hang-down position.
+    // (Measured on the NullEngine: hand z 0.08 -> 0.33, y 0.76 -> 0.84.)
+    const handR = pos(char, 'playerPart_handR');
+    const handL = pos(char, 'playerPart_handL');
+    const head = pos(char, 'playerPart_head');
+    expect(handR.z).toBeGreaterThan(handR0.z + 0.15);
+    expect(handL.z).toBeGreaterThan(handL0.z + 0.15);
+    expect(handR.y).toBeGreaterThan(handR0.y + 0.03);
+    expect(handL.y).toBeGreaterThan(handL0.y + 0.03);
+    // The torso leans forward: the head swings toward the fire and drops
+    // a little (lean, not a jump).
+    expect(head.z).toBeGreaterThan(head0.z + 0.1);
+    expect(head.y).toBeLessThan(head0.y + 0.02);
+
+    // Recovery: once cooking stops the idle hand positions return.
+    for (let i = 0; i < 120; i++) char.update(1 / 30, 0, true, false, false);
+    const handR1 = pos(char, 'playerPart_handR');
+    expect(handR1.z).toBeCloseTo(handR0.z, 1);
+    expect(handR1.y).toBeCloseTo(handR0.y, 1);
+  });
+
+  it('the eat pose wins the overlap with the cook pose', () => {
+    const { char } = makeCharacter();
+    for (let i = 0; i < 60; i++) char.update(1 / 30, 0, true, false, false);
+    // Cooking AND eating at the same time (the ~0.7 s eat window after a
+    // finished cook): the right hand goes to the mouth, not the fire.
+    for (let i = 0; i < 45; i++) {
+      char.update(1 / 30, 0, true, false, false, false, true, false, false, false, true);
+    }
+    expect(pos(char, 'playerPart_handR').y).toBeGreaterThan(1.1);
   });
 });

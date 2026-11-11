@@ -449,19 +449,19 @@ export function createTextureKit(scene: Scene): TextureKit {
     ),
     fabricShirt: set(
       'fabricshirt',
-      (c, s) => paintFabric(c, s, [0.34, 0.4, 0.36], 707),
+      (c, s) => paintFabric(c, s, [0.58, 0.48, 0.36], 707),
       0.7,
       2,
     ),
     fabricPants: set(
       'fabricpants',
-      (c, s) => paintFabric(c, s, [0.22, 0.22, 0.24], 808),
+      (c, s) => paintFabric(c, s, [0.42, 0.39, 0.34], 808),
       0.7,
       2,
     ),
     fabricBoots: set(
       'fabricboots',
-      (c, s) => paintFabric(c, s, [0.16, 0.12, 0.09], 909),
+      (c, s) => paintFabric(c, s, [0.22, 0.17, 0.12], 909),
       0.9,
       2,
     ),

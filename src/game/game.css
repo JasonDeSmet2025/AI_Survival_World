@@ -73,6 +73,12 @@ body {
   background: linear-gradient(90deg, #3f6d1f, #8fce3f);
 }
 
+/* Exhaustion lockout: desaturated, pulsing stamina bar. */
+.bar-fill.bar-stamina.exhausted {
+  filter: grayscale(0.85) brightness(0.7);
+  animation: hud-pulse 0.9s ease-in-out infinite;
+}
+
 .bar-label {
   position: absolute;
   inset: 0;
@@ -95,6 +101,48 @@ body {
 }
 .temp-hot {
   color: #ffb066;
+}
+
+/* Level badge + XP bar (progression) */
+.level {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.level-badge {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: #ffd76a;
+  background: rgba(232, 178, 63, 0.18);
+  border: 1px solid rgba(232, 178, 63, 0.45);
+  border-radius: 6px;
+  padding: 2px 7px;
+  min-width: 40px;
+  text-align: center;
+}
+
+.level-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+
+.level-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #a87a1e, #e8b23f);
+  transition: width 0.25s ease-out;
+}
+
+.level.max .level-badge {
+  color: #fff;
+  border-color: #e8b23f;
+  background: rgba(232, 178, 63, 0.4);
 }
 
 /* Hotbar */
@@ -150,6 +198,98 @@ body {
   text-overflow: ellipsis;
 }
 
+/* Tool durability: thin bar along the slot's bottom edge. */
+.slot-durability {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 4px;
+  width: 0;
+  background: #59c96a;
+  transition: width 0.15s linear;
+}
+
+.slot-durability.warn {
+  background: #e0a53a;
+}
+
+.slot-durability.low {
+  background: #d9534f;
+  animation: hud-pulse 0.8s ease-in-out infinite;
+}
+
+/* Full inventory panel (all 24 slots + held cursor) */
+.inv {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(10, 20, 35, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 12px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: auto;
+}
+
+.inv[hidden] {
+  display: none;
+}
+
+.inv-head {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.inv-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 56px);
+  gap: 6px;
+}
+
+/* Hotbar row inside the panel is outlined so it stays recognizable. */
+.inv-grid .slot.hot {
+  border-color: rgba(255, 215, 106, 0.45);
+}
+
+.slot-key {
+  position: absolute;
+  left: 5px;
+  bottom: 2px;
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+.inv-cursor-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.inv-cursor {
+  pointer-events: none;
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+.inv-cursor-hint {
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+.inv-hints {
+  font-size: 11px;
+  opacity: 0.75;
+  line-height: 1.5;
+}
+
+/* While the full inventory is open, the small hotbar row is redundant. */
+.hud.inv-open .hotbar {
+  display: none;
+}
+
 /* Crosshair + prompt + progress */
 .crosshair {
   position: absolute;
@@ -164,7 +304,7 @@ body {
 
 .prompt {
   position: absolute;
-  top: calc(50% + 28px);
+  top: 62px;
   left: 50%;
   transform: translateX(-50%);
   font-size: 14px;
@@ -238,6 +378,26 @@ body {
 .craft-item.can {
   border-color: #8fce3f;
   background: rgba(143, 206, 63, 0.14);
+}
+
+.craft-item.busy {
+  border-color: #e8b23f;
+  background: rgba(232, 178, 63, 0.18);
+  opacity: 1;
+  cursor: default;
+  animation: hud-pulse 1s ease-in-out infinite;
+}
+
+/* Locked by level: dimmer than merely unaffordable, with a lock tag. */
+.craft-item.locked {
+  opacity: 0.55;
+  border-color: rgba(232, 178, 63, 0.35);
+}
+
+.craft-item.locked .craft-name::before {
+  content: '🔒 Level ' attr(data-req) '  ·  ';
+  color: #e8b23f;
+  font-weight: 700;
 }
 
 .craft-name {
@@ -384,6 +544,36 @@ body {
   color: #ff9c5b;
 }
 
+/* Sleep fade (black screen while sleeping in a bed) */
+.sleep-fade {
+  position: absolute;
+  inset: 0;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 30;
+}
+
+/* Damage flash (red vignette while the player takes damage) */
+.damage-flash {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(120, 10, 10, 0) 42%,
+    rgba(150, 16, 10, 0.38) 78%,
+    rgba(160, 14, 8, 0.62) 100%
+  );
+  opacity: 0;
+  transition: opacity 0.35s ease-out;
+  pointer-events: none;
+  z-index: 28;
+}
+
+.sleep-fade[hidden] {
+  display: none;
+}
+
 /* Death overlay */
 .death-overlay {
   position: absolute;
@@ -424,6 +614,7 @@ body {
   position: absolute;
   bottom: 16px;
   left: 20px;
+  width: min(440px, calc(100vw - 40px));
   display: flex;
   flex-direction: column;
   gap: 4px;

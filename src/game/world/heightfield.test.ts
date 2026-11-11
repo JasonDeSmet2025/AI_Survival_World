@@ -130,6 +130,87 @@ describe('terrainMask', () => {
   });
 });
 
+describe('terrainMask biome-line irregularity (no contour rings)', () => {
+  // A purely height-based mask makes every biome boundary a closed contour
+  // line around the island (the reported "kleurbanden"). The thresholds are
+  // now per-location perturbed, so points at the SAME height may show
+  // different biomes. These tests pin that contract down.
+
+  it('keeps the waterline exactly sand at every shoreline point', () => {
+    for (let z = -315; z <= 315; z += 21) {
+      for (let x = -315; x <= 315; x += 21) {
+        const h = terrainHeight(x, z);
+        if (h > 0.3) continue;
+        expect(1 - terrainMask(x, z, h).sand).toBeLessThan(1e-6);
+      }
+    }
+  });
+
+  it('breaks the beach/grass contour ring (same height, different sand)', () => {
+    let min = 1;
+    let max = 0;
+    let n = 0;
+    for (let z = -315; z <= 315; z += 4) {
+      for (let x = -315; x <= 315; x += 4) {
+        const h = terrainHeight(x, z);
+        if (Math.abs(h - 1.0) > 0.02) continue;
+        const s = terrainMask(x, z, h).sand;
+        min = Math.min(min, s);
+        max = Math.max(max, s);
+        n++;
+      }
+    }
+    expect(n).toBeGreaterThanOrEqual(8);
+    // The old height-only mask had a spread of exactly 0 here.
+    expect(max - min).toBeGreaterThan(0.2);
+  });
+
+  it('breaks the rock contour line (same height, different rock)', () => {
+    let min = 1;
+    let max = 0;
+    let n = 0;
+    for (let z = -315; z <= 315; z += 4) {
+      for (let x = -315; x <= 315; x += 4) {
+        const h = terrainHeight(x, z);
+        if (Math.abs(h - 18.0) > 0.02) continue;
+        const r = terrainMask(x, z, h).rock;
+        min = Math.min(min, r);
+        max = Math.max(max, r);
+        n++;
+      }
+    }
+    expect(n).toBeGreaterThanOrEqual(8);
+    expect(max - min).toBeGreaterThan(0.12);
+  });
+
+  it('breaks the snow contour line (same band, different snow)', () => {
+    let min = 1;
+    let max = 0;
+    let n = 0;
+    for (let z = -315; z <= 315; z += 4) {
+      for (let x = -315; x <= 315; x += 4) {
+        const h = terrainHeight(x, z);
+        if (h < 24 || h > 26) continue;
+        const s = terrainMask(x, z, h).snow;
+        min = Math.min(min, s);
+        max = Math.max(max, s);
+        n++;
+      }
+    }
+    expect(n).toBeGreaterThanOrEqual(50);
+    expect(max - min).toBeGreaterThan(0.08);
+  });
+
+  it('is deterministic (mask and baked vertex colours)', () => {
+    const a = terrainMask(37.3, -12.8, 5.2);
+    const b = terrainMask(37.3, -12.8, 5.2);
+    expect(a).toEqual(b);
+    const g1 = buildTerrainGrid(128);
+    const g2 = buildTerrainGrid(128);
+    expect(g1.colors).toEqual(g2.colors);
+  });
+});
+
 describe('lake', () => {
   it('reports proximity correctly', () => {
     expect(isNearLake(LAKE.x, LAKE.z)).toBe(true);

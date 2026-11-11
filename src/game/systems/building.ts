@@ -4,7 +4,7 @@
  * in Node.
  */
 
-export type BuildingKind = 'campfire' | 'wall' | 'floor' | 'roof';
+export type BuildingKind = 'campfire' | 'wall' | 'floor' | 'roof' | 'bed';
 
 export interface BuildingData {
   id: string;
@@ -24,7 +24,40 @@ export const BUILDING_SIZE: Record<BuildingKind, number> = {
   wall: 2.4,
   floor: 2.0,
   roof: 2.4,
+  bed: 2.4,
 };
+
+/**
+ * Base height for a structure footprint. Floors and walls sit slightly above
+ * the highest sampled ground point so sloping terrain cannot hide their
+ * geometry. Other buildings keep the exact ground height at their centre.
+ */
+export function buildingPlacementHeight(
+  kind: BuildingKind,
+  x: number,
+  z: number,
+  rot: number,
+  terrainHeightAt: (x: number, z: number) => number,
+): number {
+  if (kind !== 'floor' && kind !== 'wall') return terrainHeightAt(x, z);
+
+  const half = kind === 'floor' ? BUILDING_SIZE.floor / 2 - 0.08 : BUILDING_SIZE.wall / 2 - 0.12;
+  const depth = kind === 'floor' ? half : 0.12;
+  const angle = (rot / 4) * Math.PI * 2;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  let maxY = -Infinity;
+
+  for (const along of [-half, 0, half]) {
+    for (const across of kind === 'floor' ? [-depth, 0, depth] : [-depth, depth]) {
+      const sampleX = x + along * cos + across * sin;
+      const sampleZ = z - along * sin + across * cos;
+      maxY = Math.max(maxY, terrainHeightAt(sampleX, sampleZ));
+    }
+  }
+
+  return maxY + 0.08;
+}
 
 export interface WallSegment {
   minX: number;

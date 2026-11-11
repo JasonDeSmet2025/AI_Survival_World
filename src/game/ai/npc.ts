@@ -13,7 +13,7 @@ import {
   Vector3,
 } from '@babylonjs/core';
 import { mulberry32 } from '../core/noise';
-import { terrainHeight } from '../world/terrain';
+import { groundSurfaceHeight } from '../world/groundSurface';
 
 export interface NpcProfile {
   id: string;
@@ -39,8 +39,8 @@ export const NPC_PROFILES: NpcProfile[] = [
       'Eten? Zoek struiken met bessen. Water drink je aan het meer, druk E.',
       'Bouw muren om je hut, dan slaap je geruster in de nacht.',
     ],
-    shirt: new Color3(0.45, 0.3, 0.18),
-    pants: new Color3(0.2, 0.22, 0.25),
+    shirt: new Color3(0.52, 0.37, 0.24),
+    pants: new Color3(0.28, 0.3, 0.32),
     skin: new Color3(0.87, 0.68, 0.52),
     hair: new Color3(0.55, 0.32, 0.15),
   },
@@ -54,8 +54,8 @@ export const NPC_PROFILES: NpcProfile[] = [
       'Bouwen? Eerst planken, dan muren, pas dan het dak. Die volgorde.',
       'Slaap bij het vuur van ons kamp, dan ben je veilig. Vast.',
     ],
-    shirt: new Color3(0.2, 0.3, 0.35),
-    pants: new Color3(0.3, 0.25, 0.18),
+    shirt: new Color3(0.29, 0.4, 0.45),
+    pants: new Color3(0.38, 0.32, 0.24),
     skin: new Color3(0.78, 0.6, 0.46),
     hair: new Color3(0.15, 0.12, 0.1),
   },
@@ -95,12 +95,24 @@ export class Npc {
 
     const shirt = new StandardMaterial(`npcShirt_${profile.id}`, scene);
     shirt.diffuseColor = profile.shirt;
+    shirt.emissiveColor = new Color3(profile.shirt.r * 0.14, profile.shirt.g * 0.14, profile.shirt.b * 0.14);
+    shirt.specularColor = new Color3(0.12, 0.1, 0.08);
+    shirt.specularPower = 24;
     const pants = new StandardMaterial(`npcPants_${profile.id}`, scene);
     pants.diffuseColor = profile.pants;
+    pants.emissiveColor = new Color3(profile.pants.r * 0.14, profile.pants.g * 0.14, profile.pants.b * 0.14);
+    pants.specularColor = new Color3(0.12, 0.1, 0.08);
+    pants.specularPower = 24;
     const skin = new StandardMaterial(`npcSkin_${profile.id}`, scene);
     skin.diffuseColor = profile.skin;
+    skin.emissiveColor = new Color3(profile.skin.r * 0.08, profile.skin.g * 0.08, profile.skin.b * 0.08);
+    skin.specularColor = new Color3(0.18, 0.15, 0.12);
+    skin.specularPower = 32;
     const hair = new StandardMaterial(`npcHair_${profile.id}`, scene);
     hair.diffuseColor = profile.hair;
+    hair.emissiveColor = new Color3(profile.hair.r * 0.08, profile.hair.g * 0.08, profile.hair.b * 0.08);
+    hair.specularColor = new Color3(0.12, 0.1, 0.08);
+    hair.specularPower = 24;
     this.materials = [shirt, pants, skin, hair];
 
     const pelvis = new TransformNode('pelvis', scene);
@@ -140,7 +152,7 @@ export class Npc {
     const start = this.route[0];
     this.root.position.x = start.x;
     this.root.position.z = start.z;
-    this.root.position.y = terrainHeight(start.x, start.z);
+    this.root.position.y = groundSurfaceHeight(start.x, start.z);
     this.dwellTimer = 3 + rng() * 5;
   }
 
@@ -200,7 +212,7 @@ export class Npc {
       this.hipR.rotation.x += (0 - this.hipR.rotation.x) * k;
       this.shoulderL.rotation.x += (0 - this.shoulderL.rotation.x) * k;
       this.shoulderR.rotation.x += (0 - this.shoulderR.rotation.x) * k;
-      this.root.position.y += (terrainHeight(p.x, p.z) - p.y) * Math.min(1, 5 * dt);
+      this.root.position.y += (groundSurfaceHeight(p.x, p.z) - p.y) * Math.min(1, 5 * dt);
       this.root.scaling.y = 1 + Math.sin(performance.now() * 0.002 + this.routeIndex) * 0.008;
       if (this.dwellTimer <= 0) {
         this.routeIndex = (this.routeIndex + 1) % this.route.length;

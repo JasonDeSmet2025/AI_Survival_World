@@ -14,13 +14,16 @@ export interface SaveData {
   v: 1;
   savedAt: number;
   stats: StatSnapshot;
-  inventory: Array<[string, number] | null>;
+  /** [id, count, durability?] — third element only present for tools. */
+  inventory: Array<[string, number, number?] | null>;
   selected: number;
   pos: { x: number; y: number; z: number };
   yaw: number;
   pitch: number;
   elapsed: number; // day-cycle clock
   world: WorldState;
+  /** Player progression (level + XP). Absent in pre-progression saves. */
+  progress?: { level: number; xp: number };
   npcs?: Record<string, { history: ChatMessage[]; memory: string[] }>;
 }
 
@@ -33,18 +36,20 @@ export const Save = {
     pitch: number,
     elapsed: number,
     world: WorldState,
+    progress?: { level: number; xp: number },
   ): SaveData {
     return {
       v: 1,
       savedAt: Date.now(),
       stats,
-      inventory: inv.slots.map((s) => (s ? [s.id, s.count] : null)),
+      inventory: inv.serialize(),
       selected: inv.selected,
       pos: { x: pos.x, y: pos.y, z: pos.z },
       yaw,
       pitch,
       elapsed,
       world,
+      ...(progress ? { progress } : {}),
     };
   },
 

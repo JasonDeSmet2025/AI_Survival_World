@@ -24,8 +24,11 @@
 - [ ] Inventory.
 - [ ] Gathering resources.
 - [ ] Crafting.
+- [ ] Cooking (campfire food).
 - [ ] Building.
 - [ ] Save/load.
+- [ ] Player progression (XP, levels, recipe unlocks).
+- [ ] Tool upgrades / material tiers.
 
 ## Phase 4 - World simulation
 - [ ] Animals and wildlife.

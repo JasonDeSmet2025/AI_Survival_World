@@ -1,4 +1,5 @@
-import { ITEMS, RECIPES } from '../core/items';
+import { harvestSeconds, ITEMS, RECIPES, toolForNode, YIELDS } from '../core/items';
+import { MAX_LEVEL } from '../systems/progress';
 import type { StatSnapshot } from '../systems/stats';
 import type { Slot } from '../systems/inventory';
 
@@ -89,7 +90,13 @@ export class Hud {
 
   private bars!: Record<'health' | 'hunger' | 'thirst' | 'stamina', HTMLDivElement>;
   private tempEl!: HTMLDivElement;
+  private levelBadge!: HTMLDivElement;
+  private levelFill!: HTMLDivElement;
+  private levelBox!: HTMLDivElement;
   private hotbarEl!: HTMLDivElement;
+  private invEl!: HTMLDivElement;
+  private invSlots: HTMLDivElement[] = [];
+  private invCursorEl!: HTMLDivElement;
   private promptEl!: HTMLDivElement;
   private progressEl!: HTMLDivElement;
   private craftEl!: HTMLDivElement;
@@ -102,6 +109,9 @@ export class Hud {
   private mpEl!: HTMLDivElement;
   private fpsEl!: HTMLDivElement;
   private deathEl!: HTMLDivElement;
+  private sleepFadeEl!: HTMLDivElement;
+  /** Red vignette shown while the player is taking damage. */
+  private damageFlashEl!: HTMLDivElement;
 
   private onRespawn: () => void;
 
@@ -125,10 +135,13 @@ export class Hud {
     el('hud-title').textContent = 'AI SURVIVAL WORLD';
     const hints = el('hud-hints');
     hints.innerHTML = [
-      '<span><b>WASD</b> move · <b>Mouse</b> look</span>',
-      '<span><b>Shift</b> sprint · <b>Space</b> jump/swim · <b>C</b> crouch</span>',
+      '<span><b>W/Z</b> vooruit · <b>S</b> achteruit · <b>A/D</b> zijwaarts · <b>Mouse</b> kijken</span>',
+      '<span><b>Shift</b> sprint · <b>Space</b> jump/swim · <b>C</b> crouch (houd C bij het landen voor een zachtere landing)</span>',
       '<span><b>F</b> gather · <b>E</b> interact/use/place</span>',
-      '<span><b>B</b> crafting · <b>1-8</b> hotbar · <b>Q</b> drop · <b>N</b> new world · <b>Esc</b> release mouse</span>',
+      '<span><b>E</b> bij een vuur = hout toevoegen · voedsel geselecteerd = koken (bessen → gekookt)</span>',
+      '<span><b>E</b> bij een bed = slapen tot \u2019s ochtends · <b>Esc</b> = wakker worden</span>',
+      '<span><b>B</b> crafting · <b>I</b> inventory · <b>1-8</b> hotbar · <b>Q</b> drop · <b>R</b> eat · <b>N</b> new world · <b>Esc</b> release mouse</span>',
+      '<span>Oogsten, maken en bouwen geeft XP — levels ontgrendelen nieuwe recepten</span>',
     ].join('');
 
     // --- Survival bars
@@ -148,6 +161,12 @@ export class Hud {
     };
     this.tempEl = el('temp', barsBox);
 
+    // --- Level + XP (progression)
+    this.levelBox = el('level', barsBox);
+    this.levelBadge = el('level-badge', this.levelBox);
+    const levelBar = el('level-bar', this.levelBox);
+    this.levelFill = el('level-fill', levelBar);
+
     // --- Hotbar
     this.hotbarEl = el('hotbar');
     for (let i = 0; i < 8; i++) {
@@ -156,6 +175,7 @@ export class Hud {
       el('slot-swatch', slot);
       el('slot-count', slot);
       el('slot-label', slot);
+      el('slot-durability', slot);
       slot.addEventListener('click', (e) => {
         e.stopPropagation();
         window.dispatchEvent(new CustomEvent('hud-hotbar-click', { detail: i }));
@@ -170,6 +190,44 @@ export class Hud {
     // --- Crosshair
     el('crosshair');
 
+    // --- Full inventory panel (all 24 slots + held-cursor slot)
+    this.invEl = el('inv');
+    this.invEl.hidden = true;
+    const invHead = el('inv-head', this.invEl);
+    invHead.textContent = 'INVENTARIS  (I to close)';
+    const grid = el('inv-grid', this.invEl);
+    for (let i = 0; i < 24; i++) {
+      const slot = el('slot', grid);
+      slot.dataset.index = String(i);
+      if (i < 8) {
+        slot.classList.add('hot');
+        const key = el('slot-key', slot);
+        key.textContent = String(i + 1);
+      }
+      el('slot-swatch', slot);
+      el('slot-count', slot);
+      el('slot-label', slot);
+      el('slot-durability', slot);
+      slot.addEventListener('click', (e) => {
+        e.stopPropagation();
+        window.dispatchEvent(new CustomEvent('hud-inv-slot-click', { detail: i }));
+      });
+      slot.title = i < 8 ? `Hotbar ${i + 1}` : `Slot ${i + 1}`;
+      this.invSlots.push(slot);
+    }
+    const cursorRow = el('inv-cursor-row', this.invEl);
+    this.invCursorEl = el('slot inv-cursor', cursorRow);
+    el('slot-swatch', this.invCursorEl);
+    el('slot-count', this.invCursorEl);
+    el('slot-label', this.invCursorEl);
+    el('slot-durability', this.invCursorEl);
+    const cursorHint = el('inv-cursor-hint', cursorRow);
+    cursorHint.textContent = 'vastgehouden';
+    const invHints = el('inv-hints', this.invEl);
+    invHints.innerHTML =
+      '<b>Klik</b> item = oppakken · <b>klik</b> slot = neerleggen / samenvoegen / verwisselen · '
+      + '<b>Q</b> = 1 item gooien · <b>I</b>/Esc = sluiten · gele rij = hotbar (1–8)';
+
     // --- Crafting menu
     this.craftEl = el('craft');
     this.craftEl.hidden = true;
@@ -179,8 +237,10 @@ export class Hud {
       const out = ITEMS[r.output.id];
       const btn = document.createElement('button');
       btn.className = 'craft-item';
+      // data-req feeds the CSS lock tag on level-locked recipes.
+      btn.dataset.req = String(r.unlockLevel ?? 1);
       btn.innerHTML =
-        `<span class="craft-name">${out.name} x${r.output.count}</span>` +
+        `<span class="craft-name">${out.name} x${r.output.count} · ${r.craftSeconds}s</span>` +
         `<span class="craft-cost">${r.inputs.map((i) => `${i.count} ${ITEMS[i.id].name}`).join(', ')}</span>`;
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -239,10 +299,74 @@ export class Hud {
       this.onRespawn();
     });
 
+    // --- Sleep fade (black screen while the player lies in a bed)
+    this.sleepFadeEl = document.createElement('div');
+    this.sleepFadeEl.className = 'sleep-fade';
+    this.sleepFadeEl.hidden = true;
+    this.root.appendChild(this.sleepFadeEl);
+
+    // --- Damage flash (red vignette while the player takes damage)
+    this.damageFlashEl = document.createElement('div');
+    this.damageFlashEl.className = 'damage-flash';
+    this.damageFlashEl.style.opacity = '0';
+    this.root.appendChild(this.damageFlashEl);
+
     // Pointer-events back on for interactive parts.
-    [this.hotbarEl, this.craftEl, this.chatEl, this.deathEl, this.mpEl].forEach((e) => {
+    [this.hotbarEl, this.craftEl, this.chatEl, this.deathEl, this.mpEl, this.invEl].forEach((e) => {
       e.style.pointerEvents = 'auto';
     });
+  }
+
+  /**
+   * Render one item slot (shared by the hotbar and the inventory panel).
+   * Keeps icon, count, label, tool-durability bar and tooltip in sync.
+   */
+  private renderSlot(el: HTMLElement, s: Slot | null, fallbackTitle: string): void {
+    const swatch = el.querySelector('.slot-swatch') as HTMLElement;
+    const count = el.querySelector('.slot-count') as HTMLElement;
+    const label = el.querySelector('.slot-label') as HTMLElement;
+    const durBar = el.querySelector('.slot-durability') as HTMLElement;
+    if (s && ITEMS[s.id]) {
+      const iconKey = s.id;
+      if (el.dataset.icon !== iconKey) {
+        el.dataset.icon = iconKey;
+        const icon = ICONS[s.id];
+        if (icon) {
+          swatch.style.background = '';
+          swatch.innerHTML = icon;
+        } else {
+          const [r, g, b] = ITEMS[s.id].color;
+          swatch.style.background = `rgb(${r * 255 | 0},${g * 255 | 0},${b * 255 | 0})`;
+          swatch.innerHTML = '';
+        }
+      }
+      swatch.style.visibility = 'visible';
+      count.textContent = s.count > 1 ? String(s.count) : '';
+      label.textContent = ITEMS[s.id].name;
+      const tool = ITEMS[s.id].tool;
+      if (tool) {
+        const d = s.durability ?? tool.maxDurability;
+        const frac = Math.max(0, Math.min(1, d / tool.maxDurability));
+        durBar.style.width = `${Math.round(frac * 100)}%`;
+        durBar.className = `slot-durability${frac > 0.5 ? '' : frac > 0.25 ? ' warn' : ' low'}`;
+        const nodes = Object.keys(YIELDS).filter((k) => toolForNode(k) === s.id);
+        const uses = nodes.length
+          ? ` · ~${Math.floor(d / (tool.wearPerSec * Math.min(...nodes.map((k) => harvestSeconds(k, s.id)))))} uses`
+          : '';
+        el.title = `${ITEMS[s.id].desc}\nDuurzaamheid ${Math.round(frac * 100)}%${uses}`;
+      } else {
+        durBar.style.width = '0';
+        el.title = ITEMS[s.id].desc;
+      }
+    } else {
+      el.dataset.icon = '';
+      swatch.style.visibility = 'hidden';
+      swatch.innerHTML = '';
+      count.textContent = '';
+      label.textContent = '';
+      durBar.style.width = '0';
+      el.title = fallbackTitle;
+    }
   }
 
   // ---------- updates ----------
@@ -252,6 +376,9 @@ export class Hud {
     this.bars.hunger.style.width = `${s.hunger}%`;
     this.bars.thirst.style.width = `${s.thirst}%`;
     this.bars.stamina.style.width = `${s.stamina}%`;
+    // Exhaustion: the stamina bar pulses and desaturates until the
+    // lockout is over, so the player sees WHY sprint is unavailable.
+    this.bars.stamina.classList.toggle('exhausted', !!s.exhausted);
     const cold = s.temperature < 8;
     const hot = s.temperature > 30;
     this.tempEl.textContent = `${s.temperature.toFixed(0)}°C${cold ? '  ❄' : hot ? '  🔥' : ''}`;
@@ -262,38 +389,26 @@ export class Hud {
     const children = this.hotbarEl.children;
     for (let i = 0; i < 8; i++) {
       const slot = children[i] as HTMLElement;
-      const s = slots[i];
       slot.classList.toggle('selected', i === selected);
-      const swatch = slot.querySelector('.slot-swatch') as HTMLElement;
-      const count = slot.querySelector('.slot-count') as HTMLElement;
-      const label = slot.querySelector('.slot-label') as HTMLElement;
-      if (s && ITEMS[s.id]) {
-        const iconKey = s.id;
-        if (slot.dataset.icon !== iconKey) {
-          slot.dataset.icon = iconKey;
-          const icon = ICONS[s.id];
-          if (icon) {
-            swatch.style.background = '';
-            swatch.innerHTML = icon;
-          } else {
-            const [r, g, b] = ITEMS[s.id].color;
-            swatch.style.background = `rgb(${r * 255 | 0},${g * 255 | 0},${b * 255 | 0})`;
-            swatch.innerHTML = '';
-          }
-        }
-        swatch.style.visibility = 'visible';
-        count.textContent = s.count > 1 ? String(s.count) : '';
-        label.textContent = ITEMS[s.id].name;
-        slot.title = ITEMS[s.id].desc;
-      } else {
-        slot.dataset.icon = '';
-        swatch.style.visibility = 'hidden';
-        swatch.innerHTML = '';
-        count.textContent = '';
-        label.textContent = '';
-        slot.title = `Slot ${i + 1}`;
-      }
+      this.renderSlot(slot, slots[i], `Slot ${i + 1}`);
     }
+  }
+
+  /**
+   * Full inventory panel (all 24 slots). `cursor` is the stack currently
+   * held by the UI mouse-cursor (rendered beside the grid, not part of any
+   * slot). The hotbar row stays visible with its selection highlight.
+   */
+  setInventory(open: boolean, slots: Array<Slot | null>, selected: number, cursor: Slot | null): void {
+    this.invEl.hidden = !open;
+    this.root.classList.toggle('inv-open', open);
+    if (!open) return;
+    for (let i = 0; i < 24; i++) {
+      const slot = this.invSlots[i];
+      slot.classList.toggle('selected', i === selected);
+      this.renderSlot(slot, slots[i] ?? null, i < 8 ? `Hotbar ${i + 1}` : `Slot ${i + 1}`);
+    }
+    this.renderSlot(this.invCursorEl, cursor, 'vastgehouden');
   }
 
   setPrompt(text: string | null): void {
@@ -310,12 +425,37 @@ export class Hud {
     this.progressEl.style.width = `${Math.round(p * 100)}%`;
   }
 
-  setCrafting(open: boolean, canCraft: Set<string>): void {
+  /**
+   * Level badge + XP progress bar. `fraction` is the player's progress
+   * within the current level in [0, 1] (1 at max level).
+   */
+  setLevel(level: number, fraction: number): void {
+    this.levelBadge.textContent = `LV ${level}`;
+    this.levelBox.title = `Niveau ${level}`;
+    this.levelFill.style.width = `${Math.round(Math.max(0, Math.min(1, fraction)) * 100)}%`;
+    this.levelBox.classList.toggle('max', level >= MAX_LEVEL);
+  }
+
+  /**
+   * Update the crafting menu. `craftingId` marks the recipe currently
+   * being worked on: while a timed craft is in progress ALL recipe
+   * buttons are disabled and the active one is highlighted (`.busy`).
+   * Recipes that require a higher level than `level` are shown locked.
+   */
+  setCrafting(open: boolean, canCraft: Set<string>, craftingId: string | null = null, level = Infinity): void {
     this.craftEl.hidden = !open;
     for (const c of this.craftItems) {
-      const ok = canCraft.has(c.id);
-      c.el.disabled = !ok;
+      const recipe = RECIPES.find((r) => r.id === c.id)!;
+      const busy = c.id === craftingId;
+      const locked = level < (recipe.unlockLevel ?? 1);
+      const ok = !craftingId && !locked && canCraft.has(c.id);
+      c.el.disabled = !ok && !busy;
       c.el.classList.toggle('can', ok);
+      c.el.classList.toggle('busy', busy);
+      c.el.classList.toggle('locked', locked && !busy);
+      c.el.title = locked
+        ? `Vergrend — vereist level ${recipe.unlockLevel}`
+        : '';
     }
   }
 
@@ -370,6 +510,29 @@ export class Hud {
     this.deathEl.hidden = !show;
     if (show) this.root.classList.add('dead');
     else this.root.classList.remove('dead');
+  }
+
+  /**
+   * Drive the black sleep overlay (0 = fully visible world, 1 = black).
+   * The game loop sets this each frame while the player is in a bed.
+   */
+  setSleepFade(v: number): void {
+    if (v <= 0) {
+      this.sleepFadeEl.hidden = true;
+      this.sleepFadeEl.style.opacity = '0';
+      return;
+    }
+    this.sleepFadeEl.hidden = false;
+    this.sleepFadeEl.style.opacity = String(Math.min(1, v));
+  }
+
+  /**
+   * Drive the red damage vignette (0 = invisible, 1 = full impact).
+   * A short CSS transition gives the fade-out feel; the game loop owns
+   * the decay so the overlay always settles back to invisible.
+   */
+  setDamageFlash(v: number): void {
+    this.damageFlashEl.style.opacity = String(Math.max(0, Math.min(1, v)));
   }
 
   dispose(): void {

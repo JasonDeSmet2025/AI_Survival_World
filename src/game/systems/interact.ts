@@ -8,6 +8,7 @@ export type InteractTarget =
   | { kind: 'node'; id: string; x: number; y: number; z: number; radius: number }
   | { kind: 'npc'; id: string; x: number; y: number; z: number; radius: number }
   | { kind: 'campfire'; id: string; x: number; y: number; z: number; radius: number }
+  | { kind: 'bed'; id: string; x: number; y: number; z: number; radius: number }
   | { kind: 'water'; x: number; y: number; z: number; radius: number };
 
 export function raycastTarget(

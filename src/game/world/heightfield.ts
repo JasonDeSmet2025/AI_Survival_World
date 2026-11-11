@@ -8,6 +8,7 @@
  * the map fades into a deep ocean floor at its edges.
  */
 import { clamp, fbm, lerp, ridged, smoothstep } from '../core/noise';
+import { bakeTerrainAOSubsampled } from './terrainAO';
 
 /** Width/depth of the square terrain tile in world units. */
 export const TERRAIN_SIZE = 640;
@@ -137,6 +138,16 @@ export function terrainNormal3(x: number, z: number): { x: number; y: number; z:
 /**
  * Biome weights per vertex: sand / grass / rock / snow (each 0..1, sum ~1).
  * Computed on the CPU so the fragment shader stays cheap.
+ *
+ * The biome thresholds are deliberately NOT fixed altitudes. A purely
+ * height-based mask makes every transition a closed contour line around the
+ * island (the reported "kleurbanden"), so each threshold is perturbed per
+ * location with seeded low-frequency noise: the sand/grass transition centre
+ * wanders between 0.65 and 1.85 m, the rock line between 12.8 and 17.2 m and
+ * the snow line between 22.6 and 27.4 m. The result is an irregular, natural
+ * biome boundary while (a) everything below 0.3 m stays exactly sand (the
+ * waterline is never grass) and (b) the mask stays a deterministic function
+ * of position (same seed stream family as the height field itself).
  */
 export function terrainMask(
   x: number,
@@ -145,15 +156,30 @@ export function terrainMask(
 ): { sand: number; grass: number; rock: number; snow: number } {
   const slope = terrainSlope(x, z);
 
-  // Sand: low elevation up to the dune/grass line.
-  const sand = 1 - smoothstep((h - 0.3) / 1.9);
+  // Per-location threshold perturbation in [-1, 1], from two seeded
+  // low-frequency octaves (~90 u and ~110 u features — smooth organic
+  // drift, no fine mottling).
+  const q1 = (fbm(x * 0.011 + 4.2, z * 0.011 + 9.8, 3) - 0.5) * 2;
+  const q2 = (fbm(x * 0.009 + 31.3, z * 0.009 + 14.9, 3) - 0.5) * 2;
 
-  // Rock: high altitude, or steep ground above the beach line.
-  let rock = smoothstep((h - 15) / 9);
-  rock = Math.max(rock, smoothstep((slope - 1.15) / 0.55) * smoothstep((h - 3) / 6));
+  // Sand: low elevation up to the dune/grass line. The transition WIDTH
+  // wanders per location (0.7..3.1 m): narrow where grass pushes down to
+  // the shore, wide where the beach extends further inland. The lower
+  // bound stays at 0.3 m, so h <= 0.3 is always exactly sand.
+  const sandWidth = 1.9 + 1.2 * q1;
+  const sand = 1 - smoothstep((h - 0.3) / sandWidth);
 
-  // Snow: only on the highest peaks.
-  const snow = smoothstep((h - 25) / 9);
+  // Rock: high altitude (line wanders 12.8..17.2 m), or steep ground above
+  // the beach line (steep-slope line wanders 1.0..1.3).
+  const rockAltLine = 15 + 2.2 * q2;
+  let rock = smoothstep((h - rockAltLine) / 9);
+  const slopeRockLine = 1.15 + 0.15 * q2;
+  rock = Math.max(rock, smoothstep((slope - slopeRockLine) / 0.55) * smoothstep((h - 3) / 6));
+
+  // Snow: only on the highest peaks (line wanders 22.6..27.4 m, following
+  // the rock perturbation so snow caps sit on the rocky peaks).
+  const snowLine = 25 + 2.4 * q2;
+  const snow = smoothstep((h - snowLine) / 9);
 
   // Grass fills the remainder.
   const grass = clamp(1 - sand - rock - snow, 0, 1);
@@ -214,6 +240,36 @@ export function findCampPoint(spawn: { x: number; z: number }): { x: number; z: 
 /** Target terrain vertex spacing in world units (controls mesh resolution). */
 export const TARGET_SPACING = 2.0;
 
+/** Grid dimensions for a terrain tile of the given size/spacing. */
+export function terrainGridLayout(
+  size = TERRAIN_SIZE,
+  spacing = TARGET_SPACING,
+): { size: number; samples: number; step: number } {
+  const samples = Math.min(513, Math.max(129, Math.round(size / spacing) + 1));
+  return { size, samples, step: size / (samples - 1) };
+}
+
+/**
+ * Heights of the DEFAULT rendered terrain grid vertices (row-major, iz
+ * major): the single source of truth shared by the visible mesh
+ * (`buildTerrainGrid`) and the mesh-exact surface sampler
+ * (`groundSurface.ts`). Lazy, built once, deterministic.
+ */
+let vertexHeightsCache: { samples: number; step: number; heights: Float32Array } | null = null;
+
+export function terrainVertexHeights(): { samples: number; step: number; heights: Float32Array } {
+  if (vertexHeightsCache) return vertexHeightsCache;
+  const { size, samples, step } = terrainGridLayout();
+  const heights = new Float32Array(samples * samples);
+  for (let iz = 0; iz < samples; iz++) {
+    for (let ix = 0; ix < samples; ix++) {
+      heights[iz * samples + ix] = terrainHeight(-size / 2 + ix * step, -size / 2 + iz * step);
+    }
+  }
+  vertexHeightsCache = { samples, step, heights };
+  return vertexHeightsCache;
+}
+
 export interface TerrainGrid {
   samples: number;
   /** xyz per vertex. */
@@ -222,6 +278,11 @@ export interface TerrainGrid {
   normals: Float32Array;
   /** rgba biome mask per vertex (sand/grass/rock/snow). */
   colors: Float32Array;
+  /**
+   * Baked per-vertex ambient occlusion (1 = fully lit). Pure function of
+   * the grid heights — see world/terrainAO.ts. Geometry is untouched.
+   */
+  ao: Float32Array;
   /** triangle index buffer. */
   indices: Uint32Array;
 }
@@ -232,15 +293,23 @@ export interface TerrainGrid {
  * separate from the rendering code so it is unit-testable in Node.
  */
 export function buildTerrainGrid(size = TERRAIN_SIZE, spacing = TARGET_SPACING): TerrainGrid {
-  const SAMPLES = Math.min(513, Math.max(129, Math.round(size / spacing) + 1));
-  const step = size / (SAMPLES - 1);
+  const { samples: SAMPLES, step } = terrainGridLayout(size, spacing);
 
-  const H = new Float32Array(SAMPLES * SAMPLES);
-  for (let iz = 0; iz < SAMPLES; iz++) {
-    for (let ix = 0; ix < SAMPLES; ix++) {
-      const x = (ix / (SAMPLES - 1) - 0.5) * size;
-      const z = (iz / (SAMPLES - 1) - 0.5) * size;
-      H[iz * SAMPLES + ix] = terrainHeight(x, z);
+  // Default tile: reuse the shared grid so the visible mesh and the
+  // mesh-exact surface sampler can never drift apart. Non-default sizes
+  // (tests) compute their own grid.
+  const shared = size === TERRAIN_SIZE && spacing === TARGET_SPACING ? terrainVertexHeights() : null;
+  let H: Float32Array;
+  if (shared) {
+    H = shared.heights;
+  } else {
+    H = new Float32Array(SAMPLES * SAMPLES);
+    for (let iz = 0; iz < SAMPLES; iz++) {
+      for (let ix = 0; ix < SAMPLES; ix++) {
+        const x = (ix / (SAMPLES - 1) - 0.5) * size;
+        const z = (iz / (SAMPLES - 1) - 0.5) * size;
+        H[iz * SAMPLES + ix] = terrainHeight(x, z);
+      }
     }
   }
 
@@ -248,6 +317,10 @@ export function buildTerrainGrid(size = TERRAIN_SIZE, spacing = TARGET_SPACING):
   const positions = new Float32Array(count * 3);
   const normals = new Float32Array(count * 3);
   const colors = new Float32Array(count * 4);
+  // Baked per-vertex AO (same grid, additive shading attribute only):
+  // half-resolution bake + bilinear upsample (see terrainAO.ts), converted
+  // to float32 for the GPU vertex buffer.
+  const ao = new Float32Array(bakeTerrainAOSubsampled(H, SAMPLES, step, 2));
 
   for (let iz = 0; iz < SAMPLES; iz++) {
     for (let ix = 0; ix < SAMPLES; ix++) {
@@ -299,5 +372,5 @@ export function buildTerrainGrid(size = TERRAIN_SIZE, spacing = TARGET_SPACING):
     }
   }
 
-  return { samples: SAMPLES, positions, normals, colors, indices };
+  return { samples: SAMPLES, positions, normals, colors, ao, indices };
 }

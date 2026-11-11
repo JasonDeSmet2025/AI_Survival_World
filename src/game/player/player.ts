@@ -22,6 +22,11 @@ export type PlayerPose = 'idle' | 'walk' | 'sprint' | 'jump' | 'swim' | 'crouch'
 export class PlayerCharacter {
   /** Root transform at the character's feet. */
   readonly root: TransformNode;
+  /**
+   * Pivot between root and hips that the sleep blend rotates (-90° around
+   * the character's forward axis) to lay the body down on a bed.
+   */
+  readonly sleepPivot: TransformNode;
   /** Meshes to register as shadow casters. */
   readonly shadowMeshes: Mesh[] = [];
 
@@ -44,24 +49,67 @@ export class PlayerCharacter {
   private phase = 0;
   private activity = 0;
   private crouchMix = 0;
+  /** Smoothed 0..1 lie-down blend (driven by the `sleeping` update param). */
+  private sleepBlend = 0;
+  private sleepTarget = 0;
+  /** Smoothed 0..1 landing dip (driven by the `landing` update param). */
+  private landBlend = 0;
+  /** Knee offset applied last frame (removed before the pose branch so the dip never accumulates). */
+  private kneeDip = 0;
 
   private mats: SharedMaterials;
 
   constructor(scene: Scene, mats: SharedMaterials) {
     this.mats = mats;
     this.root = new TransformNode('player', scene);
+    // Sleep pivot sits between root and hips so the lie-down rotation
+    // happens in the character's LOCAL frame (after the root yaw), which
+    // is what lets the body lay along a bed at any placement rotation.
+    this.sleepPivot = this.node('playerSleepPivot', this.root, 0, 0, 0);
 
-    this.hips = this.node('playerHips', this.root, 0, 0.92, 0);
+    this.hips = this.node('playerHips', this.sleepPivot, 0, 0.92, 0);
     this.torso = this.node('playerTorso', this.hips, 0, 0.26, 0);
 
     // Torso: capsule + shoulder mass + waist block for a natural silhouette.
     this.addPart(MeshBuilder.CreateCapsule('playerPart_torso', {
-      radius: 0.21, height: 0.56, tessellation: 12,
-    }, scene), this.torso, new Vector3(0, 0.16, 0), this.mats.playerBody);
+      radius: 0.21, height: 0.74, tessellation: 12,
+    }, scene), this.torso, new Vector3(0, 0.1, 0), this.mats.playerBody);
     const chest = MeshBuilder.CreateBox('playerPart_chest', { width: 0.46, height: 0.2, depth: 0.3 }, scene);
     this.addPart(chest, this.torso, new Vector3(0, 0.34, 0), this.mats.playerBody);
-    const waist = MeshBuilder.CreateBox('playerPart_waist', { width: 0.36, height: 0.16, depth: 0.26 }, scene);
-    this.addPart(waist, this.hips, new Vector3(0, -0.02, 0), this.mats.playerPants);
+    const waist = MeshBuilder.CreateBox('playerPart_waist', { width: 0.38, height: 0.2, depth: 0.28 }, scene);
+    this.addPart(waist, this.hips, new Vector3(0, -0.005, 0), this.mats.playerPants);
+
+    // Field jacket details: collar, front closure, chest pockets and belt.
+    for (const [side, label] of [[-1, 'L'], [1, 'R']] as const) {
+      const collar = MeshBuilder.CreateBox(`playerPart_collar${label}`, {
+        width: 0.15, height: 0.045, depth: 0.09,
+      }, scene);
+      this.addPart(collar, this.torso, new Vector3(side * 0.065, 0.455, 0.055), this.mats.playerAccent);
+      collar.rotation.z = side * 0.28;
+
+      const pocket = MeshBuilder.CreateBox(`playerPart_pocket${label}`, {
+        width: 0.105, height: 0.09, depth: 0.025,
+      }, scene);
+      this.addPart(pocket, this.torso, new Vector3(side * 0.13, 0.285, 0.157), this.mats.playerBody);
+      const flap = MeshBuilder.CreateBox(`playerPart_pocketFlap${label}`, {
+        width: 0.115, height: 0.035, depth: 0.032,
+      }, scene);
+      this.addPart(flap, this.torso, new Vector3(side * 0.13, 0.33, 0.16), this.mats.playerAccent);
+    }
+
+    const zipper = MeshBuilder.CreateBox('playerPart_zipper', {
+      width: 0.012, height: 0.2, depth: 0.012,
+    }, scene);
+    this.addPart(zipper, this.torso, new Vector3(0, 0.29, 0.158), this.mats.playerPants);
+    for (let i = 0; i < 3; i++) {
+      const button = MeshBuilder.CreateSphere(`playerPart_button${i}`, { diameter: 0.018, segments: 6 }, scene);
+      this.addPart(button, this.torso, new Vector3(0.018, 0.22 + i * 0.055, 0.168), this.mats.playerAccent);
+    }
+
+    const belt = MeshBuilder.CreateBox('playerPart_belt', { width: 0.38, height: 0.065, depth: 0.28 }, scene);
+    this.addPart(belt, this.hips, new Vector3(0, 0.025, 0), this.mats.playerBoots);
+    const buckle = MeshBuilder.CreateBox('playerPart_buckle', { width: 0.07, height: 0.055, depth: 0.025 }, scene);
+    this.addPart(buckle, this.hips, new Vector3(0, 0.025, 0.15), this.mats.playerAccent);
 
     // Neck + head + hair.
     const neck = MeshBuilder.CreateCylinder('playerPart_neck', { diameter: 0.09, height: 0.1, tessellation: 8 }, scene);
@@ -73,6 +121,20 @@ export class PlayerCharacter {
     this.addPart(hair, this.torso, new Vector3(0, 0.72, -0.015), this.mats.playerHair);
     hair.scaling.set(0.98, 0.72, 1.0);
 
+    // Simple face features make the head read clearly when seen from the front.
+    for (const [side, label] of [[-1, 'L'], [1, 'R']] as const) {
+      const eye = MeshBuilder.CreateSphere(`playerPart_eye${label}`, { diameter: 0.025, segments: 6 }, scene);
+      this.addPart(eye, this.torso, new Vector3(side * 0.048, 0.68, 0.132), this.mats.playerHair);
+      const brow = MeshBuilder.CreateBox(`playerPart_brow${label}`, {
+        width: 0.055, height: 0.012, depth: 0.018,
+      }, scene);
+      this.addPart(brow, this.torso, new Vector3(side * 0.048, 0.705, 0.128), this.mats.playerHair);
+      const ear = MeshBuilder.CreateSphere(`playerPart_ear${label}`, { diameter: 0.055, segments: 6 }, scene);
+      this.addPart(ear, this.torso, new Vector3(side * 0.13, 0.66, 0), this.mats.playerSkin);
+    }
+    const nose = MeshBuilder.CreateSphere('playerPart_nose', { diameter: 0.035, segments: 6 }, scene);
+    this.addPart(nose, this.torso, new Vector3(0, 0.65, 0.142), this.mats.playerSkin);
+
     // Backpack: main pack + flap + rolled blanket on top.
     const pack = MeshBuilder.CreateBox('playerPart_pack', { width: 0.34, height: 0.38, depth: 0.15 }, scene);
     this.addPart(pack, this.torso, new Vector3(0, 0.16, -0.21), this.mats.backpack);
@@ -80,7 +142,21 @@ export class PlayerCharacter {
     this.addPart(flap, this.torso, new Vector3(0, 0.38, -0.22), this.mats.backpack);
     const roll = MeshBuilder.CreateCylinder('playerPart_roll', { diameter: 0.09, height: 0.3, tessellation: 8 }, scene);
     roll.rotation.z = Math.PI / 2;
-    this.addPart(roll, this.torso, new Vector3(0, 0.44, -0.21), this.mats.playerBody);
+    this.addPart(roll, this.torso, new Vector3(0, 0.44, -0.21), this.mats.playerAccent);
+    for (const [side, label] of [[-1, 'L'], [1, 'R']] as const) {
+      const strap = MeshBuilder.CreateBox(`playerPart_packStrap${label}`, {
+        width: 0.045, height: 0.38, depth: 0.025,
+      }, scene);
+      this.addPart(strap, this.torso, new Vector3(side * 0.14, 0.17, -0.3), this.mats.playerBoots);
+      const pouch = MeshBuilder.CreateBox(`playerPart_packPouch${label}`, {
+        width: 0.075, height: 0.14, depth: 0.12,
+      }, scene);
+      this.addPart(pouch, this.torso, new Vector3(side * 0.18, 0.12, -0.21), this.mats.backpack);
+    }
+    const packPatch = MeshBuilder.CreateBox('playerPart_packPatch', {
+      width: 0.075, height: 0.075, depth: 0.018,
+    }, scene);
+    this.addPart(packPatch, this.torso, new Vector3(0, 0.17, -0.294), this.mats.playerAccent);
 
     // Arms: shoulder pivot -> upper arm -> elbow -> forearm -> wrist/hand.
     // Pivots live on the TORSO (not the hips) so the shoulders track the
@@ -102,6 +178,10 @@ export class PlayerCharacter {
         radius: 0.066, height: 0.26, tessellation: 10,
       }, scene);
       this.addPart(fore, elbow, new Vector3(0, -0.12, 0), this.mats.playerBody);
+      const cuff = MeshBuilder.CreateCylinder(`playerPart_cuff${elbowName}`, {
+        diameter: 0.14, height: 0.035, tessellation: 8,
+      }, scene);
+      this.addPart(cuff, elbow, new Vector3(0, -0.225, 0), this.mats.playerAccent);
       const wrist = this.node(`playerWrist${elbowName}`, elbow, 0, -0.26, 0);
       const hand = MeshBuilder.CreateSphere(`playerPart_hand${elbowName}`, { diameter: 0.09, segments: 8 }, scene);
       this.addPart(hand, wrist, new Vector3(0, -0.03, 0), this.mats.playerSkin);
@@ -120,12 +200,20 @@ export class PlayerCharacter {
       }, scene);
       this.addPart(thigh, pivot, new Vector3(0, -0.22, 0), this.mats.playerPants);
       const knee = this.node(`playerKnee${kneeName}`, pivot, 0, -0.44, 0);
+      const kneePad = MeshBuilder.CreateBox(`playerPart_kneePad${kneeName}`, {
+        width: 0.14, height: 0.1, depth: 0.04,
+      }, scene);
+      this.addPart(kneePad, knee, new Vector3(0, -0.12, 0.075), this.mats.backpack);
       const shin = MeshBuilder.CreateCapsule(`playerPart_shin${kneeName}`, {
         radius: 0.082, height: 0.42, tessellation: 10,
       }, scene);
       this.addPart(shin, knee, new Vector3(0, -0.21, 0), this.mats.playerPants);
       const boot = MeshBuilder.CreateBox(`playerPart_boot${kneeName}`, { width: 0.15, height: 0.09, depth: 0.26 }, scene);
       this.addPart(boot, knee, new Vector3(0, -0.44, 0.045), this.mats.playerBoots);
+      const toeCap = MeshBuilder.CreateBox(`playerPart_toeCap${kneeName}`, {
+        width: 0.13, height: 0.04, depth: 0.07,
+      }, scene);
+      this.addPart(toeCap, knee, new Vector3(0, -0.44, 0.14), this.mats.backpack);
       if (kneeName === 'L') this.kneeL = knee;
       else this.kneeR = knee;
     }
@@ -192,6 +280,17 @@ export class PlayerCharacter {
    * Advance procedural animation.
    * @param speed current horizontal speed m/s
    * @param harvesting true while the player holds F on a gatherable node.
+   * @param eating true for a short window after consuming food; blends the
+   *   right arm into an eat pose (hand at the mouth).
+   * @param crafting true while a timed craft is in progress; the character
+   *   bends over a work spot in front and works with a rhythmic strike.
+   * @param sleeping true while the player lies in a bed; the body blends
+   *   onto its back along the character's forward axis.
+   * @param landing true for a short window after a hard landing; the body
+   *   dips (hips drop, knees flex) as if absorbing the impact.
+   * @param cooking true while a timed campfire cook is in progress; the
+   *   character leans over the fire with both hands extended and a gentle
+   *   stirring bob.
    */
   update(
     dt: number,
@@ -200,6 +299,11 @@ export class PlayerCharacter {
     inWater: boolean,
     crouching: boolean,
     harvesting = false,
+    eating = false,
+    crafting = false,
+    sleeping = false,
+    landing = false,
+    cooking = false,
   ): void {
     const target: PlayerPose = inWater
       ? 'swim'
@@ -213,7 +317,31 @@ export class PlayerCharacter {
               ? 'walk'
               : 'idle';
 
-    const ampTarget = target === 'idle' ? 0.05 : target === 'sprint' ? 0.95 : 0.55;
+    const ampTarget = sleeping
+      ? 0.03 // shallow breathing while lying down
+      : target === 'idle' ? 0.05 : target === 'sprint' ? 0.95 : 0.55;
+
+    // Sleep blend: rotate the whole body -90° around the forward axis so
+    // the character lies on its back with the head toward local -Z (the
+    // bed's headboard end) and the face pointing up. Feet stay at the
+    // root (the bed's foot end).
+    this.sleepTarget = sleeping ? 1 : 0;
+    this.sleepBlend += (this.sleepTarget - this.sleepBlend) * Math.min(1, dt * 6);
+    this.sleepPivot.rotation.x = -this.sleepBlend * (Math.PI / 2);
+
+    // Landing dip: quick attack, quick release — reads as the knees
+    // absorbing the impact. Skipped while sleeping (lying in a bed).
+    if (sleeping) this.landBlend = 0;
+    else this.landBlend += ((landing ? 1 : 0) - this.landBlend) * Math.min(1, dt * 12);
+    // Strip last frame's knee offset so the pose branch below works from a
+    // clean value (the idle pose smooths instead of overwriting, so a raw
+    // "+=" each frame would accumulate instead of stay constant).
+    if (this.kneeDip !== 0) {
+      this.kneeL.rotation.x -= this.kneeDip;
+      this.kneeR.rotation.x -= this.kneeDip;
+      this.kneeDip = 0;
+    }
+
     this.activity += (ampTarget - this.activity) * Math.min(1, dt * 8);
     const a = this.activity;
     const bob = target === 'walk' || target === 'sprint';
@@ -299,13 +427,73 @@ export class PlayerCharacter {
       }
     }
 
+    // Craft pose: the player works on something on the ground in front —
+    // torso leans forward, left arm braces low, right arm drives a
+    // rhythmic strike (sinusoid so it reads as hammering/shaping). The
+    // motion derives from `this.phase`, which keeps advancing with the
+    // same clock as the walk cycle, so it stays lively while standing.
+    // Applied after the pose branches, before the eat pose (eating wins
+    // the ~0.7 s overlap window).
+    if (crafting) {
+      const k = Math.min(1, dt * 10);
+      const strike = (Math.sin(this.phase * 2.6) + 1) / 2; // 0..1, periodic
+      const armXT = -0.45 - strike * 1.0; // brace low -> lift up
+      this.armR.rotation.x += (armXT - this.armR.rotation.x) * k;
+      this.armR.rotation.z += (-0.15 - this.armR.rotation.z) * k;
+      this.elbowR.rotation.x += (-0.45 - strike * 0.55 - this.elbowR.rotation.x) * k;
+      this.armL.rotation.x += (-0.55 - this.armL.rotation.x) * k;
+      this.armL.rotation.z += (0.12 - this.armL.rotation.z) * k;
+      this.elbowL.rotation.x += (-0.7 - this.elbowL.rotation.x) * k;
+    }
+
+    // Cook pose: the player stands over the fire with both hands extended
+    // forward-down, a gentle alternating stir bob (the phase clock keeps it
+    // lively while standing still). Applied after the pose branches, before
+    // the eat pose (eating wins the overlap window).
+    if (cooking) {
+      const k = Math.min(1, dt * 8);
+      const stir = Math.sin(this.phase * 1.8) * 0.06;
+      this.armL.rotation.x += (-0.95 + stir - this.armL.rotation.x) * k;
+      this.armR.rotation.x += (-0.95 - stir - this.armR.rotation.x) * k;
+      this.armL.rotation.z += (0.18 - this.armL.rotation.z) * k;
+      this.armR.rotation.z += (-0.18 - this.armR.rotation.z) * k;
+      this.elbowL.rotation.x += (-0.55 - this.elbowL.rotation.x) * k;
+      this.elbowR.rotation.x += (-0.55 - this.elbowR.rotation.x) * k;
+    }
+
+    // Eat pose: blend the right hand up to the mouth with a slight chew
+    // bob. Applied after the pose branches so it works while idle, walking,
+    // crouching or swimming; the blend keeps the transition smooth.
+    if (eating) {
+      const chew = Math.sin(this.phase * 2.4) * 0.05;
+      const ek = Math.min(1, dt * 12);
+      this.armR.rotation.x += (-1.2 + chew - this.armR.rotation.x) * ek;
+      this.elbowR.rotation.x += (-1.9 - this.elbowR.rotation.x) * ek;
+      this.armR.rotation.z += (0.2 - this.armR.rotation.z) * ek;
+    }
+
     // Body bob + crouch drop (root scale kept, hips move).
     // The 0.14 drop matches the crouch leg pose above (boots stay planted).
+    // The landing dip lowers the hips a touch more and flexes the knees
+    // (applied additively on top of every pose branch above).
     const hipBob = bob ? Math.abs(Math.sin(this.phase)) * 0.05 * a : 0;
-    const hipY = (0.92 - this.crouchMix * 0.14) + hipBob;
+    const hipY = (0.92 - this.crouchMix * 0.14) + hipBob - this.landBlend * 0.04;
     this.hips.position.y = hipY;
-    // Torso leans forward slightly while moving, back when crouching.
-    const leanTarget = bob ? 0.12 * a : this.crouchMix * 0.35;
+    if (this.landBlend > 0.001) {
+      this.kneeDip = this.landBlend * 0.2;
+      this.kneeL.rotation.x += this.kneeDip;
+      this.kneeR.rotation.x += this.kneeDip;
+    }
+    // Torso leans forward slightly while moving, back when crouching,
+    // furthest forward while crafting (work pose wins over crouch) and
+    // forward over the fire while cooking.
+    const leanTarget = crafting
+      ? 0.38
+      : cooking
+        ? 0.3
+        : bob
+          ? 0.12 * a
+          : this.crouchMix * 0.35;
     this.torso.rotation.x += (leanTarget - this.torso.rotation.x) * Math.min(1, dt * 6);
   }
 

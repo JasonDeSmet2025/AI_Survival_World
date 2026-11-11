@@ -1,13 +1,16 @@
 /**
  * Keyboard + pointer-lock mouse input for the game.
  * Key map:
- *  WASD / arrows  move
+ *  WASD / ZS / arrows  move
  *  Space          jump / swim up
  *  Shift          sprint
  *  C (hold)       crouch
  *  E              interact (talk, drink, cook, pickup)
  *  F (hold)       harvest
  *  B              toggle crafting menu
+ *  I / Esc        toggle full inventory panel (Esc only while open)
+ *  Q              drop one selected item (or from the inventory cursor)
+ *  R              eat/drink the selected consumable
  *  1-8            select hotbar slot
  */
 /**
@@ -18,6 +21,15 @@
  * below this value, so gameplay feel is unchanged.
  */
 const MAX_FRAME_MOUSE_DELTA = 240;
+
+/** Movement axes from held keyboard codes (supports both QWERTY and AZERTY). */
+export function movementAxes(keys: ReadonlySet<string>): { forward: number; strafe: number } {
+  const forward = Number(keys.has('KeyW') || keys.has('KeyZ') || keys.has('ArrowUp'))
+    - Number(keys.has('KeyS') || keys.has('ArrowDown'));
+  const strafe = Number(keys.has('KeyD') || keys.has('ArrowRight'))
+    - Number(keys.has('KeyA') || keys.has('ArrowLeft'));
+  return { forward, strafe };
+}
 
 export class InputController {
   private keys = new Set<string>();
@@ -82,17 +94,11 @@ export class InputController {
   };
 
   get forward(): number {
-    let f = 0;
-    if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) f += 1;
-    if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) f -= 1;
-    return f;
+    return movementAxes(this.keys).forward;
   }
 
   get strafe(): number {
-    let s = 0;
-    if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) s += 1;
-    if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) s -= 1;
-    return s;
+    return movementAxes(this.keys).strafe;
   }
 
   get sprint(): boolean {

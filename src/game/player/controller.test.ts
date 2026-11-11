@@ -207,3 +207,187 @@ describe('PlayerController ground interaction', () => {
     expect(c.pos.y).toBeGreaterThanOrEqual(groundHeight(c.pos.x, c.pos.z) - 1e-9);
   });
 });
+
+describe('PlayerController sprint', () => {
+  it('sprints at 9.2 m/s when the gate is open and reports sprinting', () => {
+    const c = new PlayerController({ x: SPAWN.x, y: SPAWN.y, z: SPAWN.z });
+    tick(c, 300, input({ forward: 1, sprint: true }));
+    expect(c.sprinting).toBe(true);
+    expect(c.speed).toBeCloseTo(9.2, 1);
+    expect(c.pos.y).toBeGreaterThanOrEqual(groundHeight(c.pos.x, c.pos.z) - 1e-9);
+  });
+
+  it('does not sprint when the canSprint gate is closed (walks instead)', () => {
+    const c = new PlayerController({ x: SPAWN.x, y: SPAWN.y, z: SPAWN.z });
+    // canSprint=false (last update arg): the sprint request is ignored and
+    // the sprinting flag stays false, so no stamina drain can occur.
+    for (let i = 0; i < 300; i++) c.update(DT, input({ forward: 1, sprint: true }), 0, [], false, []);
+    expect(c.sprinting).toBe(false);
+    expect(c.speed).toBeCloseTo(5.2, 1); // walking, not sprinting
+  });
+
+  it('does not sprint while crouching or in water', () => {
+    const c = new PlayerController({ x: SPAWN.x, y: SPAWN.y, z: SPAWN.z });
+    c.crouching = true;
+    tick(c, 300, input({ forward: 1, sprint: true }));
+    expect(c.sprinting).toBe(false);
+    expect(c.speed).toBeCloseTo(2.2, 1);
+
+    const swim = new PlayerController({ x: LAKE.x, y: SEA_LEVEL, z: LAKE.z });
+    tick(swim, 120, input({ forward: 0.5, sprint: true }));
+    expect(swim.inWater).toBe(true);
+    expect(swim.sprinting).toBe(false);
+    expect(swim.speed).toBeCloseTo(3.0, 1);
+  });
+
+  it('ramps sprint speed up gradually instead of switching instantly', () => {
+    const c = new PlayerController({ x: SPAWN.x, y: SPAWN.y, z: SPAWN.z });
+    tick(c, 20, input({ forward: 1, sprint: true })); // ~0.33 s of sprinting
+    expect(c.sprinting).toBe(true);
+    // A third of a second in: well above walk speed but not yet full sprint.
+    expect(c.speed).toBeGreaterThan(6.5);
+    expect(c.speed).toBeLessThan(9.0);
+    tick(c, 300, input({ forward: 1, sprint: true }));
+    expect(c.speed).toBeCloseTo(9.2, 1); // steady state
+  });
+
+  it('drops back to walk speed when sprint is released', () => {
+    const c = new PlayerController({ x: SPAWN.x, y: SPAWN.y, z: SPAWN.z });
+    tick(c, 300, input({ forward: 1, sprint: true }));
+    expect(c.speed).toBeCloseTo(9.2, 1);
+    tick(c, 240, input({ forward: 1 }));
+    expect(c.sprinting).toBe(false);
+    expect(c.speed).toBeCloseTo(5.2, 1);
+  });
+
+  it('no sprinting while idle (holding shift standing still)', () => {
+    const c = new PlayerController({ x: SPAWN.x, y: SPAWN.y, z: SPAWN.z });
+    tick(c, 60, input({ sprint: true }));
+    expect(c.sprinting).toBe(false);
+    expect(c.speed).toBe(0);
+  });
+});
+
+describe('PlayerController movement lock (timed crafting)', () => {
+  it('does not move horizontally while locked, even with full input', () => {
+    const c = new PlayerController({ x: SPAWN.x, y: SPAWN.y, z: SPAWN.z });
+    tick(c, 60, input({ forward: 1 })); // build up walk speed first
+    expect(c.speed).toBeGreaterThan(4);
+    const x0 = c.pos.x;
+    const z0 = c.pos.z;
+    for (let i = 0; i < 120; i++) c.update(DT, input({ forward: 1, strafe: 1 }), 0, [], true, [], false);
+    expect(c.pos.x).toBeCloseTo(x0, 5);
+    expect(c.pos.z).toBeCloseTo(z0, 5);
+    expect(c.speed).toBe(0); // input is fully ignored
+  });
+
+  it('cannot jump while locked but still snaps to the ground', () => {
+    const c = new PlayerController({ x: SPAWN.x, y: SPAWN.y, z: SPAWN.z });
+    for (let i = 0; i < 60; i++) c.update(DT, input({ jumpHeld: true }), 0, [], true, [], false);
+    const g = groundHeight(c.pos.x, c.pos.z);
+    expect(c.onGround).toBe(true);
+    expect(c.pos.y).toBeCloseTo(g, 4);
+  });
+
+  it('vertical physics keep running: a locked player in the air still falls and lands', () => {
+    const c = new PlayerController({ x: SPAWN.x, y: SPAWN.y + 6, z: SPAWN.z });
+    c.vel.y = 0;
+    for (let i = 0; i < 300; i++) c.update(DT, input(), 0, [], true, [], false);
+    const g = groundHeight(c.pos.x, c.pos.z);
+    expect(c.onGround).toBe(true);
+    expect(c.pos.y).toBeCloseTo(g, 3);
+  });
+});
+
+describe('PlayerController landing impact (fall damage events)', () => {
+  it('reports a jump landing at the jump-arc distance, consumed exactly once', () => {
+    const c = new PlayerController({ x: SPAWN.x, y: SPAWN.y, z: SPAWN.z });
+    tick(c, 10, input());
+    tick(c, 20, input({ jumpHeld: true }));
+    expect(c.onGround).toBe(false);
+    tick(c, 240, input());
+    expect(c.onGround).toBe(true);
+    const impact = c.consumeImpact();
+    // Theoretical arc is v²/2g = 7.4²/44 ≈ 1.244 m; frame quantisation
+    // allows a margin, and it must stay inside the "no damage" band.
+    expect(impact).not.toBeNull();
+    expect(impact!.distance).toBeGreaterThan(0.9);
+    expect(impact!.distance).toBeLessThan(1.6);
+    expect(impact!.crouching).toBe(false);
+    expect(Math.abs(impact!.y - groundHeight(c.pos.x, c.pos.z))).toBeLessThan(1e-9);
+    // Consumed: the next frame reports nothing (the player is grounded).
+    expect(c.consumeImpact()).toBeNull();
+    tick(c, 30, input());
+    expect(c.consumeImpact()).toBeNull();
+  });
+
+  it('does not report any impact while walking downhill on the surface', () => {
+    const cliff = findCliff();
+    const c = new PlayerController({ x: cliff.x, y: groundHeight(cliff.x, cliff.z), z: cliff.z });
+    for (let i = 0; i < 120; i++) {
+      c.update(DT, input({ forward: 1 }), -Math.PI / 2, [], true, []);
+      // Slope-stick keeps the player grounded: no fall event may fire.
+      expect(c.consumeImpact()).toBeNull();
+    }
+  });
+
+  it('reports the full drop distance for an airborne fall', () => {
+    const cliff = findCliff();
+    const edgeY = groundHeight(cliff.x, cliff.z);
+    const c = new PlayerController({ x: cliff.x, y: edgeY + 3, z: cliff.z });
+    tick(c, 1, input());
+    expect(c.onGround).toBe(false);
+    for (let i = 0; i < 120 && c.onGround === false; i++) c.update(DT, input(), 0, [], true, []);
+    const impact = c.consumeImpact();
+    expect(impact).not.toBeNull();
+    // Dropped 3 m (starting at rest, so the peak is the start height).
+    expect(impact!.distance).toBeGreaterThan(2.7);
+    expect(impact!.distance).toBeLessThan(3.25);
+  });
+
+  it('records the crouch state at the moment of impact', () => {
+    const cliff = findCliff();
+    const c = new PlayerController({ x: cliff.x, y: groundHeight(cliff.x, cliff.z) + 3, z: cliff.z });
+    c.crouching = true; // player hits C while falling
+    c.update(DT, input(), 0, [], true, []); // first step leaves the ground
+    expect(c.onGround).toBe(false);
+    for (let i = 0; i < 120 && c.onGround === false; i++) c.update(DT, input(), 0, [], true, []);
+    const impact = c.consumeImpact();
+    expect(impact).not.toBeNull();
+    expect(impact!.crouching).toBe(true);
+    // Releasing crouch after landing does not retro-change the record.
+    c.crouching = false;
+    expect(impact!.crouching).toBe(true);
+  });
+
+  it('does not report an impact when the fall ends in water', () => {
+    const c = new PlayerController({ x: LAKE.x, y: SEA_LEVEL + 6, z: LAKE.z });
+    for (let i = 0; i < 300; i++) c.update(DT, input(), 0, [], true, []);
+    expect(c.inWater).toBe(true);
+    expect(c.consumeImpact()).toBeNull();
+    // The buoyant settle is not a fall either.
+    tick(c, 120, input());
+    expect(c.consumeImpact()).toBeNull();
+  });
+
+  it('respawn clears any pending impact and fall tracking', () => {
+    const cliff = findCliff();
+    const c = new PlayerController({ x: cliff.x, y: groundHeight(cliff.x, cliff.z) + 4, z: cliff.z });
+    c.update(DT, input(), 0, [], true, []);
+    expect(c.onGround).toBe(false);
+    c.respawn(cliff.x, groundHeight(cliff.x, cliff.z), cliff.z);
+    expect(c.consumeImpact()).toBeNull();
+    tick(c, 60, input());
+    expect(c.consumeImpact()).toBeNull();
+  });
+
+  it('reports impacts even when movement is locked (fall physics keep running)', () => {
+    const c = new PlayerController({ x: SPAWN.x, y: SPAWN.y + 6, z: SPAWN.z });
+    c.vel.y = 0;
+    for (let i = 0; i < 300; i++) c.update(DT, input(), 0, [], true, [], false);
+    const impact = c.consumeImpact();
+    expect(impact).not.toBeNull();
+    expect(impact!.distance).toBeGreaterThan(5.5);
+    expect(impact!.distance).toBeLessThan(6.4);
+  });
+});
