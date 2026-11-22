@@ -83,8 +83,8 @@ describe('procedural texture kit + shared materials', () => {
     scene = new Scene(engine);
     const kit = createTextureKit(scene);
     const painted = canvases.filter((c) => c.last !== undefined);
-    // 9 sets x (albedo + normal) = 18 painted canvases, pairs in order.
-    expect(painted.length).toBe(18);
+    // 11 sets x (albedo + normal) = 22 painted canvases, pairs in order.
+    expect(painted.length).toBe(22);
     for (const name of Object.keys(kit) as Array<keyof typeof kit>) {
       const set = kit[name];
       expect(set.albedo.name.length).toBeGreaterThan(0);

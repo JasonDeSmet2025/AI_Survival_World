@@ -14,13 +14,30 @@ import {
 } from './progress';
 import { Crafting, CraftSession } from './crafting';
 
-/** Fill an inventory enough to craft every recipe (all inputs). */
+/**
+ * Fill an inventory enough to craft every recipe. Derived from the recipe
+ * table itself (the largest input count per item), so adding a recipe with a
+ * new material can never silently make a "can craft everything" test lie.
+ */
 function stockedInventory(): Inventory {
   const inv = new Inventory();
-  inv.add('wood', 30);
-  inv.add('stone', 15);
+  const need = new Map<string, number>();
+  for (const r of RECIPES) {
+    for (const i of r.inputs) need.set(i.id, Math.max(need.get(i.id) ?? 0, i.count));
+  }
+  for (const [id, count] of need) {
+    // Anything left over means a material that cannot be held here at all.
+    expect(inv.add(id, count)).toBe(0);
+  }
   return inv;
 }
+
+/** The ids the table gates behind a given level, in a stable order. */
+const unlockedAt = (level: number): string[] =>
+  RECIPES.filter((r) => recipeUnlockLevel(r) === level).map((r) => r.id).sort();
+
+/** The highest unlock level the table uses. */
+const TOP_LEVEL = Math.max(...RECIPES.map(recipeUnlockLevel));
 
 const recipeById = (id: string): (typeof RECIPES)[number] => {
   const r = RECIPES.find((x) => x.id === id);
@@ -118,26 +135,41 @@ describe('Progression.addXp', () => {
 });
 
 describe('recipe unlock reporting', () => {
-  it('reports only the recipes unlocked by the levels gained in one grant', () => {
+  it('reports exactly the recipes of the level gained, one grant at a time', () => {
+    // Walk the whole curve level by level: every grant must report precisely
+    // the tier it just opened — nothing earlier, nothing twice.
     const p = new Progression();
-    // Level 1 → 2 unlocks wall + floor.
-    const r2 = p.addXp(xpForLevel(1));
-    expect(r2.unlocked.sort()).toEqual(['recipe_floor', 'recipe_wall']);
-    // Level 2 → 3 unlocks roof.
-    const r3 = p.addXp(xpForLevel(2));
-    expect(r3.unlocked).toEqual(['recipe_roof']);
-    // Level 3 → 4 unlocks bed.
-    const r4 = p.addXp(xpForLevel(3));
-    expect(r4.unlocked).toEqual(['recipe_bed']);
-    // A non-unlocking grant reports nothing new.
-    const r5 = p.addXp(xpForLevel(4));
-    expect(r5.unlocked).toEqual([]);
+    const seen = new Set<string>();
+    for (let l = 1; l < MAX_LEVEL; l++) {
+      const r = p.addXp(xpForLevel(l));
+      expect(r.unlocked.sort(), `level ${l} -> ${l + 1}`).toEqual(unlockedAt(l + 1));
+      for (const id of r.unlocked) expect(seen.has(id), `${id} reported twice`).toBe(false);
+      r.unlocked.forEach((id: string) => seen.add(id));
+    }
+    // Everything the table gates behind a level has been announced.
+    const gated = RECIPES.filter((r) => recipeUnlockLevel(r) > 1).map((r) => r.id).sort();
+    expect([...seen].sort()).toEqual(gated);
+  });
+
+  it('a level-up with nothing gated behind it reports nothing', () => {
+    const p = new Progression();
+    for (let l = 1; l <= TOP_LEVEL; l++) p.addXp(xpForLevel(l));
+    expect(p.level).toBe(TOP_LEVEL + 1);
+    // By definition of TOP_LEVEL no recipe waits one level higher.
+    expect(p.addXp(xpForLevel(TOP_LEVEL + 1)).unlocked).toEqual([]);
   });
 
   it('reports all unlocks across a multi-level jump', () => {
     const p = new Progression();
     const r = p.addXp(xpForLevel(1) + xpForLevel(2));
-    expect(r.unlocked.sort()).toEqual(['recipe_floor', 'recipe_roof', 'recipe_wall']);
+    expect(r.unlocked.sort()).toEqual([...unlockedAt(2), ...unlockedAt(3)].sort());
+    // The same recipes as walking those two levels one by one.
+    const stepwise = new Progression();
+    const oneByOne = [
+      ...stepwise.addXp(xpForLevel(1)).unlocked,
+      ...stepwise.addXp(xpForLevel(2)).unlocked,
+    ];
+    expect(r.unlocked.sort()).toEqual(oneByOne.sort());
   });
 
   it('unlockLevel falls back to 1 for recipes without the field', () => {
@@ -219,11 +251,17 @@ describe('crafting is gated by level', () => {
     const inv = stockedInventory();
     expect(Crafting.canCraft(inv, recipeById('recipe_wall'), 1)).toBe(false);
     expect(Crafting.canCraft(inv, recipeById('recipe_wall'), 2)).toBe(true);
-    // Level 1: only level-1 recipes are available.
+    // Level 1: the three basics AND the tekentafel. The table is deliberately
+    // the level-1 milestone (the first thing you build), not a reward.
     const lvl1 = Crafting.available(inv, 1).map((r) => r.id).sort();
-    expect(lvl1).toEqual(['recipe_axe', 'recipe_campfire', 'recipe_pick']);
-    // Level 4: everything in the current table.
-    expect(Crafting.available(inv, 4).map((r) => r.id).sort())
+    expect(lvl1).toEqual([
+      'recipe_axe',
+      'recipe_campfire',
+      'recipe_pick',
+      'recipe_workbench',
+    ]);
+    // The highest unlock level in the table opens everything.
+    expect(Crafting.available(inv, TOP_LEVEL).map((r) => r.id).sort())
       .toEqual(RECIPES.map((r) => r.id).sort());
   });
 

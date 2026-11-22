@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_ROOT="/root/AI_Survival_World"
+WORKTREE_ROOT="/root/AI_Survival_World-worktrees"
+STATE_DIR="$PROJECT_ROOT/.pi/runtime"
+MAX_AGENTS=4
+
+AGENT="${1:-}"
+TASK="${2:-}"
+
+if [[ -z "$AGENT" || -z "$TASK" ]]; then
+    echo "Gebruik: tools/agents/run <agent> <taak>"
+    exit 1
+fi
+
+case "$AGENT" in
+    world)       PROMPT="world-agent.md" ;;
+    gameplay)    PROMPT="gameplay-agent.md" ;;
+    ai)          PROMPT="ai-agent.md" ;;
+    visual)      PROMPT="visual-agent.md" ;;
+    multiplayer) PROMPT="multiplayer-agent.md" ;;
+    qa)          PROMPT="qa-agent.md" ;;
+    *)
+        echo "[FOUT] Onbekende agent: $AGENT"
+        exit 1
+        ;;
+esac
+
+PROMPT_FILE="$PROJECT_ROOT/.pi/agents/$PROMPT"
+
+if [[ ! -s "$PROMPT_FILE" ]]; then
+    echo "[FOUT] Agentprompt ontbreekt."
+    exit 1
+fi
+
+cd "$PROJECT_ROOT"
+
+RUN_ID="$(date +%Y%m%d-%H%M%S-%N)"
+BRANCH="agent/${AGENT}-${RUN_ID}"
+WORKTREE="$WORKTREE_ROOT/${AGENT}-${RUN_ID}"
+
+mkdir -p "$WORKTREE_ROOT" "$STATE_DIR"
+
+SLOT_FILE="$STATE_DIR/active-${AGENT}-${RUN_ID}"
+
+# Controleer slots en registreer dit proces atomair.
+exec 9>"$STATE_DIR/slots.lock"
+flock 9
+
+# Verwijder oude of ongeldige slotbestanden.
+for slot in "$STATE_DIR"/active-*; do
+    [[ -f "$slot" ]] || continue
+
+    SLOT_PID="$(cat "$slot" 2>/dev/null || true)"
+
+    if [[ ! "$SLOT_PID" =~ ^[0-9]+$ ]] || ! kill -0 "$SLOT_PID" 2>/dev/null; then
+        echo "[INFO] Verwijder oud slot: $(basename "$slot")"
+        rm -f "$slot"
+    fi
+done
+
+ACTIVE_COUNT="$(find "$STATE_DIR" -maxdepth 1 -type f -name 'active-*' | wc -l)"
+
+if (( ACTIVE_COUNT >= MAX_AGENTS )); then
+    echo "[FOUT] Maximum van $MAX_AGENTS gelijktijdige agents bereikt."
+    flock -u 9
+    exit 1
+fi
+
+echo "$BASHPID" > "$SLOT_FILE"
+flock -u 9
+
+cleanup() {
+    rm -f "$SLOT_FILE"
+}
+trap cleanup EXIT
+
+echo "Agent: $AGENT"
+echo "Model: Qwen 3.8 27B"
+echo "Branch: $BRANCH"
+echo "Worktree: $WORKTREE"
+echo "PID: $BASHPID"
+echo "Taak: $TASK"
+
+git worktree add -b "$BRANCH" "$WORKTREE" HEAD
+
+# Worktrees share the .git store but not node_modules. Link the main
+# checkout's node_modules so the agent can run tsc/vite without a full
+# npm install (fast and avoids dependency drift).
+if [[ -d "$PROJECT_ROOT/node_modules" && ! -e "$WORKTREE/node_modules" ]]; then
+    ln -s "$PROJECT_ROOT/node_modules" "$WORKTREE/node_modules"
+    echo "[OK] node_modules gelinkt naar hoofddirectory."
+fi
+
+cd "$WORKTREE"
+
+# Provide private project memory without adding it to Git.
+if [[ -f "$PROJECT_ROOT/MEMORY.md" && ! -e "$WORKTREE/MEMORY.md" ]]; then
+    ln -s "$PROJECT_ROOT/MEMORY.md" "$WORKTREE/MEMORY.md"
+    COMMON_GIT_DIR="$(git -C "$PROJECT_ROOT" rev-parse --git-common-dir)"
+    if [[ "$COMMON_GIT_DIR" != /* ]]; then
+        COMMON_GIT_DIR="$PROJECT_ROOT/$COMMON_GIT_DIR"
+    fi
+    EXCLUDE_FILE="$COMMON_GIT_DIR/info/exclude"
+    mkdir -p "$(dirname "$EXCLUDE_FILE")"
+    grep -qxF "/MEMORY.md" "$EXCLUDE_FILE" 2>/dev/null || echo "/MEMORY.md" >> "$EXCLUDE_FILE"
+    echo "[OK] Private MEMORY.md linked and excluded from Git."
+fi
+
+echo "[OK] Geïsoleerde worktree aangemaakt."
+
+set +e
+pi \
+    --approve \
+    --print \
+    --provider vives \
+    --model qwen3.8-27b \
+    --append-system-prompt "$PROMPT_FILE" \
+    --tools 'read,bash,edit,write,grep,find,ls,mcp__you_free__*,mcp__you_docs__*' \
+    --name "AI Survival World - ${AGENT}" \
+    "$TASK"
+
+PI_STATUS=$?
+set -e
+
+echo
+echo "Agent beëindigd met exitcode: $PI_STATUS"
+echo "Branch behouden: $BRANCH"
+echo "Worktree behouden: $WORKTREE"
+
+exit "$PI_STATUS"

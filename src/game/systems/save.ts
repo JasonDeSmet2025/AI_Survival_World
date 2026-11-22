@@ -6,9 +6,47 @@
 import type { Inventory } from './inventory';
 import type { StatSnapshot } from './stats';
 import type { WorldState } from '../world/types';
-import type { ChatMessage } from '../ai/chat';
+import type { SerializedConversation } from '../ai/chat';
 
 const KEY = 'asw_save_v1';
+
+/**
+ * Structural validation for anything arriving from localStorage. `optional`
+ * fields (progress, npcs) are only rejected when PRESENT and malformed — a
+ * save from before those systems existed must keep loading.
+ */
+function isSaveData(d: unknown): d is SaveData {
+  if (typeof d !== 'object' || d === null) return false;
+  const s = d as Record<string, unknown>;
+  if (s.v !== 1) return false;
+  if (typeof s.savedAt !== 'number' || !Number.isFinite(s.savedAt)) return false;
+  if (typeof s.stats !== 'object' || s.stats === null) return false;
+  if (!Array.isArray(s.inventory)) return false;
+  if (typeof s.selected !== 'number') return false;
+  const pos = s.pos as Record<string, unknown> | undefined;
+  if (typeof pos !== 'object' || pos === null) return false;
+  if (!['x', 'y', 'z'].every((k) => Number.isFinite((pos as Record<string, unknown>)[k]))) return false;
+  if (!Number.isFinite(s.yaw) || !Number.isFinite(s.pitch) || !Number.isFinite(s.elapsed)) return false;
+  const w = s.world as Record<string, unknown> | undefined;
+  if (typeof w !== 'object' || w === null) return false;
+  if (!Array.isArray(w.depleted) || !Array.isArray(w.buildings)) return false;
+  if (typeof w.hp !== 'object' || w.hp === null) return false;
+  if ('progress' in s && s.progress != null) {
+    const p = s.progress as Record<string, unknown>;
+    if (typeof p !== 'object' || !Number.isFinite(p.level) || !Number.isFinite(p.xp)) return false;
+  }
+  if ('npcs' in s && s.npcs != null) {
+    if (typeof s.npcs !== 'object' || Array.isArray(s.npcs)) return false;
+  }
+  if ('quests' in s && s.quests != null) {
+    // Shallow shape check only; QuestLog.restore re-validates every single
+    // quest against the real item/recipe/building tables and drops junk.
+    const q = s.quests as Record<string, unknown>;
+    if (typeof q !== 'object' || Array.isArray(q)) return false;
+    if (!Array.isArray(q.offered) || !Array.isArray(q.active) || !Array.isArray(q.completed)) return false;
+  }
+  return true;
+}
 
 export interface SaveData {
   v: 1;
@@ -24,7 +62,10 @@ export interface SaveData {
   world: WorldState;
   /** Player progression (level + XP). Absent in pre-progression saves. */
   progress?: { level: number; xp: number };
-  npcs?: Record<string, { history: ChatMessage[]; memory: string[] }>;
+  /** Per-NPC conversation history + durable memory (see ai/chat.ts). */
+  npcs?: Record<string, SerializedConversation>;
+  /** Quest log snapshot (see systems/quests.ts). Absent in pre-quest saves. */
+  quests?: unknown;
 }
 
 export const Save = {
@@ -62,12 +103,19 @@ export const Save = {
     }
   },
 
+  /**
+   * Reads the save. Returns null when there is none, when it was written by
+   * an incompatible version, or when the JSON parses to something that is
+   * structurally NOT a save (truncated localStorage, an older/partial
+   * shape): restoring such an object would throw inside the game boot and
+   * leave the player with a black screen instead of a fresh world.
+   */
   read(): SaveData | null {
     try {
       const raw = localStorage.getItem(KEY);
       if (!raw) return null;
       const data = JSON.parse(raw) as SaveData;
-      if (data.v !== 1) return null;
+      if (!isSaveData(data)) return null;
       return data;
     } catch {
       return null;

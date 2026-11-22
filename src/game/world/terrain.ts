@@ -26,6 +26,11 @@ import {
 import { COLOR_GRADE_GLSL, COLOR_GRADE_UNIFORMS, syncColorPipeline } from './colorPipeline';
 import { NOISE_H21_GLSL, NOISE_VNOISE_GLSL } from './noiseGLSL';
 import {
+  DETAIL_LAYERS,
+  createTerrainDetailTextures,
+  type TerrainDetailTextures,
+} from './terrainDetail';
+import {
   SHADOW_FRAG_DECL,
   SHADOW_SAMPLE,
   SHADOW_UNIFORMS,
@@ -89,6 +94,11 @@ uniform vec3 ambientGround;
 uniform vec3 fogColor;
 uniform float fogDensity;
 uniform float seaLevel;
+uniform sampler2D detailGrass;
+uniform sampler2D detailRock;
+uniform sampler2D detailSand;
+/** World units per detail tile (grass, rock, sand) — see terrainDetail.ts. */
+uniform vec3 detailTiles;
 varying vec3 vNormal;
 varying vec3 vPos;
 varying vec4 vMask;
@@ -102,6 +112,16 @@ ${NOISE_VNOISE_GLSL}
 // (The old 3.3-unit-cell value noise produced the reported tone banding.)
 float grainA(vec2 p) {
   return vnoise(p) * 0.62 + vnoise(p * 2.17 + vec2(7.31, 3.77)) * 0.38;
+}
+
+/**
+ * One mip-mapped world-space detail fetch, de-tiled by a slow domain warp.
+ * A rotation/offset blend would smear the pattern; displacing the UV with a
+ * low-frequency noise instead breaks the visible tile grid while keeping
+ * every texel's local sharpness.
+ */
+vec4 detailSample(sampler2D tex, vec2 worldXZ, float tile, vec2 warp) {
+  return texture2D(tex, worldXZ / tile + warp);
 }
 
 ${COLOR_GRADE_GLSL}
@@ -120,7 +140,7 @@ void main() {
 
   vec2 xz = vPos.xz;
   float gA = grainA(xz * 0.95);                    // ~1.0u organic mottling
-  float gF = vnoise(xz * 3.4 + vec2(11.7, 5.3));   // ~0.3u fine grain
+  float gF = vnoise(xz * 0.25 + vec2(11.7, 5.3));  // ~4u tonal variation
   float gP = vnoise(xz * 0.033 + vec2(2.1, 8.4));  // ~30u slow tone patches
 
   vec3 sandC  = mix(sandLo,  sandHi,  gA);
@@ -129,7 +149,7 @@ void main() {
   vec3 snowC  = mix(snowLo,  snowHi,  0.40 + 0.60 * gA);
 
   vec3 col = sandC * vMask.r + grassC * vMask.g + rockC * vMask.b + snowC * vMask.a;
-  // Gentle modulation only: slow large-scale tone + fine grain. The old
+  // Gentle modulation only: slow large-scale tone + mid-scale grain. The old
   // single +/-9% low-frequency multiplier read as visible tone bands.
   col *= 0.97 + 0.06 * gP;
   col *= 0.97 + 0.06 * gF;
@@ -137,6 +157,49 @@ void main() {
   // Underwater terrain reads as silt/rock rather than surface biomes.
   float wet = smoothstep(seaLevel + 0.25, seaLevel - 1.5, vPos.y);
   col = mix(col, seabed, wet * 0.72);
+
+  // ------------------------------------------------------------------
+  // SURFACE DETAIL (procedural mip-mapped detail maps, world/terrainDetail.ts)
+  // ------------------------------------------------------------------
+  // World-space planar projection: detail density is a property of the WORLD
+  // (metres per tile), never of the terrain mesh, so it is identical on a
+  // 2u hi chunk and an 8u lo chunk. The GPU mip chain + anisotropic filtering
+  // raise the detail wavelength exactly where a pixel covers more ground,
+  // which is what removes the view-aligned stripe aliasing the previous
+  // analytic (finite-difference) shader detail produced at grazing angles.
+  vec3 geoN = normalize(vNormal);
+  float wu = vnoise(xz * 0.021 + vec2(3.7, 9.1)) - 0.5;
+  float wv = vnoise(xz * 0.021 + vec2(22.3, 4.9)) - 0.5;
+  vec2 warp = vec2(wu, wv) * 0.42; // UV displacement, in tiles
+
+  float wGrass = vMask.g;
+  float wRock = vMask.b + vMask.a * 0.8; // snow = wind-scoured mineral detail
+  float wSand = vMask.r;
+  float wSum = wGrass + wRock + wSand + 1e-4;
+
+  vec4 dG = detailSample(detailGrass, xz, detailTiles.x, warp);
+  vec4 dR = detailSample(detailRock, xz, detailTiles.y, warp);
+  vec4 dS = detailSample(detailSand, xz, detailTiles.z, warp);
+
+  vec2 detGrad =
+    (vec2(dG.r, dG.g) * wGrass + vec2(dR.r, dR.g) * wRock + vec2(dS.r, dS.g) * wSand) / wSum - 0.5;
+  float detAlb = (dG.b * wGrass + dR.b * wRock + dS.b * wSand) / wSum;
+  float detSpec = (dG.a * wGrass + dR.a * wRock + dS.a * wSand) / wSum;
+
+  // Tonal detail (crevice/crest variation) — neutral at detAlb = 0.5.
+  col *= 0.78 + 0.44 * detAlb;
+
+  // Normal perturbation. The projected gradient lives in world XZ; it is
+  // weakened on steep faces (where a top-down projection stretches) and
+  // projected into the surface tangent plane so the geometric normal is
+  // never rotated out of its own plane.
+  // The variable is named 'flatness', NOT 'flat': 'flat' is a reserved
+  // interpolation qualifier in GLSL ES 3.0 and using it as an identifier
+  // makes the whole terrain effect fail to compile.
+  float flatness = clamp(geoN.y, 0.0, 1.0);
+  vec3 grad = vec3(detGrad.x, 0.0, detGrad.y) * (1.35 * (0.3 + 0.7 * flatness));
+  grad -= geoN * dot(grad, geoN);
+  vec3 N = normalize(geoN - grad);
 
   // Baked per-vertex ambient occlusion (see world/terrainAO.ts): darkens
   // valley insides, cliff bases and concave slopes so the landforms read
@@ -146,16 +209,10 @@ void main() {
   // boost (0.8 -> 0.64) so the occlusion reads on the smooth landforms.
   col *= vAO * vAO;
 
-  // Micro normal perturbation: finite differences of the coarse grain
-  // octave give subtle per-tile shading so flat areas are not plastic.
-  // Sand/grass get the most grain; rock/snow stay smoother.
-  float e = 0.25;
-  float nL = vnoise((xz - vec2(e, 0.0)) * 0.95);
-  float nR = vnoise((xz + vec2(e, 0.0)) * 0.95);
-  float nD = vnoise((xz - vec2(0.0, e)) * 0.95);
-  float nU = vnoise((xz + vec2(0.0, e)) * 0.95);
-  float nAmt = 0.15 + 0.30 * vMask.r + 0.45 * vMask.g;
-  vec3 N = normalize(vNormal + vec3((nL - nR) * nAmt, 0.0, (nD - nU) * nAmt));
+  // Micro normal perturbation now comes from the mip-mapped detail maps
+  // above. The previous finite-difference vnoise bump was sub-pixel at any
+  // real viewing distance and aliased into view-aligned stripes ("corduroy")
+  // on every slope, so it is deliberately gone — see terrainDetail.ts.
 
   float ndl = max(dot(N, normalize(sunDir)), 0.0);
   float hemi = 0.5 + 0.5 * N.y;
@@ -165,7 +222,17 @@ void main() {
   // Ambient/hemisphere stays full so forest interiors keep readability.
   float shadow = ${SHADOW_SAMPLE};
   vec3 light = sunColor * (ndl * shadow) + amb;
-  vec3 c = col * light;
+
+  // Sheen: damp crevices and wet beach sand catch the sun; dry grass and
+  // crests stay matte. Without any specular term the whole world reads like
+  // matte plastic, especially on the beach and on wet rock after dusk.
+  vec3 L = normalize(sunDir);
+  vec3 V = normalize(cameraPosition - vPos);
+  vec3 Hv = normalize(L + V);
+  float damp = smoothstep(1.4, 0.05, vPos.y) * (1.0 - wet); // just above waterline
+  float specTerm =
+    pow(max(dot(N, Hv), 0.0), 26.0) * detSpec * (1.0 + 1.8 * damp) * 0.85;
+  vec3 c = col * light + sunColor * vec3(specTerm) * shadow * ndl;
 
   // Engine-matched scene fog (EXP2), blended in LINEAR space like the
   // built-in materials do, then graded (ACES + gamma + contrast + dither)
@@ -387,6 +454,8 @@ export interface TerrainHandle {
   updateLod(cam: { x: number; y: number; z: number }): void;
   /** Every LOD mesh (hi + mid + lo), for QA/diagnostics. */
   lodMeshes(): Mesh[];
+  /** The procedural detail maps bound to the terrain material (QA + dispose). */
+  detailTextures: TerrainDetailTextures;
   /** Disposes every chunk mesh, the material and the scene observers. */
   dispose(): void;
 }
@@ -452,6 +521,10 @@ export function createTerrain(scene: Scene): TerrainHandle {
         'fogColor',
         'fogDensity',
         'seaLevel',
+        'detailGrass',
+        'detailRock',
+        'detailSand',
+        'detailTiles',
         ...COLOR_GRADE_UNIFORMS,
         ...SHADOW_UNIFORMS,
       ],
@@ -467,6 +540,19 @@ export function createTerrain(scene: Scene): TerrainHandle {
   material.setVector3('ambientGround', new Vector3(0.2, 0.18, 0.15));
   material.setFloat('fogDensity', 0.0028);
   material.setVector3('fogColor', new Vector3(0.62, 0.72, 0.82));
+
+  // Procedural surface detail (grass/rock/sand micro-relief, albedo and
+  // sheen), generated deterministically from WORLD_SEED. See
+  // world/terrainDetail.ts for why this is a mip-mapped texture and not more
+  // analytic shader noise.
+  const detail = createTerrainDetailTextures(scene);
+  material.setTexture('detailGrass', detail.grass);
+  material.setTexture('detailRock', detail.rock);
+  material.setTexture('detailSand', detail.sand);
+  material.setVector3(
+    'detailTiles',
+    new Vector3(DETAIL_LAYERS.grass.tile, DETAIL_LAYERS.rock.tile, DETAIL_LAYERS.sand.tile),
+  );
 
   // One static frozen mesh per chunk per detail level; they all share the
   // single material. The world starts in hi everywhere (mid/lo disabled);
@@ -544,6 +630,7 @@ export function createTerrain(scene: Scene): TerrainHandle {
     disposed = true;
     scene.onBeforeRenderObservable.remove(observable);
     shadowReceiver.dispose();
+    detail.dispose();
     material.dispose();
   };
   const allMeshes = [...meshes, ...midMeshes, ...loMeshes];
@@ -552,6 +639,7 @@ export function createTerrain(scene: Scene): TerrainHandle {
   return {
     meshes,
     material,
+    detailTextures: detail,
     /** Distance LOD swap (see TERRAIN_LOD_* constants and updateLod doc). */
     updateLod(cam: { x: number; y: number; z: number }): void {
       for (const st of lodState) {

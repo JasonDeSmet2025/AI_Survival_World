@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_ROOT="/root/AI_Survival_World"
+INTEGRATION="/root/AI_Survival_World-worktrees/integration-overnight-20261103"
+WORKTREE_ROOT="/root/AI_Survival_World-worktrees"
+STATE_DIR="$PROJECT_ROOT/.pi/runtime"
+
+AGENT="${1:-}"
+TASK_FILE="${2:-}"
+
+case "$AGENT" in
+  world|gameplay|visual) ;;
+  *) echo "Gebruik: run-integration <world|gameplay|visual> <taskfile>"; exit 1 ;;
+esac
+
+case "$AGENT" in
+  world) PROMPT="world-agent.md" ;;
+  gameplay) PROMPT="gameplay-agent.md" ;;
+  visual) PROMPT="visual-agent.md" ;;
+esac
+
+PROMPT_FILE="$PROJECT_ROOT/.pi/agents/$PROMPT"
+
+[[ -s "$PROMPT_FILE" ]] || { echo "Agentprompt ontbreekt: $PROMPT_FILE"; exit 1; }
+[[ -s "$TASK_FILE" ]] || { echo "Taakbestand ontbreekt: $TASK_FILE"; exit 1; }
+[[ -d "$INTEGRATION/.git" || -f "$INTEGRATION/.git" ]] || { echo "Integratieworktree ontbreekt"; exit 1; }
+
+TASK="$(cat "$TASK_FILE")"
+BASE_COMMIT="$(git -C "$INTEGRATION" rev-parse HEAD)"
+RUN_ID="$(date +%Y%m%d-%H%M%S-%N)"
+BRANCH="agent/${AGENT}-integration-${RUN_ID}"
+WORKTREE="$WORKTREE_ROOT/integration-${AGENT}-${RUN_ID}"
+SLOT_FILE="$STATE_DIR/active-${AGENT}-${RUN_ID}"
+
+mkdir -p "$WORKTREE_ROOT" "$STATE_DIR"
+
+exec 9>"$STATE_DIR/slots.lock"
+flock 9
+
+for slot in "$STATE_DIR"/active-*; do
+  [[ -f "$slot" ]] || continue
+  SLOT_PID="$(cat "$slot" 2>/dev/null || true)"
+  if [[ ! "$SLOT_PID" =~ ^[0-9]+$ ]] || ! kill -0 "$SLOT_PID" 2>/dev/null; then
+    rm -f "$slot"
+  fi
+done
+
+ACTIVE_COUNT="$(find "$STATE_DIR" -maxdepth 1 -type f -name 'active-*' | wc -l)"
+if (( ACTIVE_COUNT >= 6 )); then
+  echo "Maximum aantal agents bereikt."
+  flock -u 9
+  exit 1
+fi
+
+echo "$BASHPID" > "$SLOT_FILE"
+flock -u 9
+
+cleanup() { rm -f "$SLOT_FILE"; }
+trap cleanup EXIT
+
+echo "Agent: $AGENT"
+echo "Model: Qwen 3.8 27B"
+echo "Basis: $BASE_COMMIT"
+echo "Branch: $BRANCH"
+echo "Worktree: $WORKTREE"
+
+git -C "$INTEGRATION" worktree add -b "$BRANCH" "$WORKTREE" "$BASE_COMMIT"
+
+if [[ -d "$INTEGRATION/node_modules" ]]; then
+  ln -s "$INTEGRATION/node_modules" "$WORKTREE/node_modules"
+fi
+
+cd "$WORKTREE"
+
+pi \
+  --approve \
+  --print \
+  --provider vives \
+  --model qwen3.8-27b \
+  --append-system-prompt "$PROMPT_FILE" \
+  --tools read,bash,edit,write,grep,find,ls \
+  --name "AI Survival World - ${AGENT}" \
+  "$TASK"
+
+echo "Agent beëindigd."
+echo "Branch: $BRANCH"
+echo "Worktree: $WORKTREE"

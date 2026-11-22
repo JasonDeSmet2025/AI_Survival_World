@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+PROJECT="/root/AI_Survival_World"
+INTEGRATION="/root/AI_Survival_World-worktrees/integration-overnight-20261103"
+WORKTREE="/root/AI_Survival_World-worktrees/supervisor-24h"
+STATE="$PROJECT/.pi/runtime/supervisor"
+LOGS="$STATE/logs"
+
+HOURS="${SUPERVISOR_HOURS:-24}"
+DEV_TIMEOUT="${SUPERVISOR_DEV_TIMEOUT:-75m}"
+QA_TIMEOUT="${SUPERVISOR_QA_TIMEOUT:-30m}"
+
+mkdir -p "$STATE" "$LOGS"
+
+exec 9>"$STATE/supervisor.lock"
+if ! flock -n 9; then
+  echo "Er draait al een supervisor."
+  exit 1
+fi
+
+START="$(date +%s)"
+DEADLINE=$((START + HOURS * 3600))
+ROUND=0
+
+log() {
+  echo "[$(date '+%F %T')] $*" | tee -a "$STATE/supervisor.log"
+}
+
+run_agent() {
+  local role="$1"
+  local timeout_value="$2"
+  local task="$3"
+  local prompt="$PROJECT/.pi/agents/${role}-agent.md"
+  local logfile="$LOGS/round-${ROUND}-${role}.log"
+
+  if [[ ! -s "$prompt" ]]; then
+    log "PROMPT ONTBREEKT: $prompt"
+    return 1
+  fi
+
+  log "START ${role} - ronde ${ROUND}"
+
+  (
+    cd "$WORKTREE"
+    timeout --signal=TERM --kill-after=60 "$timeout_value" \
+      pi \
+        --approve \
+        --print \
+        --no-session \
+        --provider vives \
+        --model qwen3.8-27b \
+        --append-system-prompt "$prompt" \
+        --tools 'read,bash,edit,write,grep,find,ls,mcp__you_free__*,mcp__you_docs__*' \
+        --name "ASW Supervisor ${role} ronde ${ROUND}" \
+        "$task"
+  ) >"$logfile" 2>&1
+
+  local result=$?
+
+  if [[ $result -eq 0 ]]; then
+    log "KLAAR ${role} - ronde ${ROUND}"
+  else
+    log "FOUT ${role} - exitcode ${result} - zie $logfile"
+  fi
+
+  return "$result"
+}
+
+# Maak een eigen, blijvende werkbranch op basis van de huidige integratie.
+if [[ ! -e "$WORKTREE/.git" ]]; then
+  BRANCH="supervisor/24h"
+
+  if git -C "$PROJECT" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+    git -C "$PROJECT" worktree add "$WORKTREE" "$BRANCH"
+  else
+    git -C "$PROJECT" worktree add -b "$BRANCH" "$WORKTREE" \
+      "$(git -C "$INTEGRATION" rev-parse HEAD)"
+  fi
+
+  if [[ -d "$INTEGRATION/node_modules" ]]; then
+    ln -s "$INTEGRATION/node_modules" "$WORKTREE/node_modules"
+  fi
+fi
+
+if [[ ! -d "$WORKTREE/.git" && ! -f "$WORKTREE/.git" ]]; then
+  log "FOUT: supervisor-worktree bestaat niet."
+  exit 1
+fi
+
+log "SUPERVISOR GESTART"
+log "Duur: ${HOURS} uur"
+log "Werkdirectory: $WORKTREE"
+log "Branch: $(git -C "$WORKTREE" branch --show-current)"
+log "Basisintegratie: $(git -C "$INTEGRATION" rev-parse --short HEAD)"
+
+ROLES=(world gameplay visual)
+LAST_FAILURE="Nog geen vorige fouten."
+
+while (( $(date +%s) < DEADLINE )); do
+  ROUND=$((ROUND + 1))
+  ROLE="${ROLES[$(((ROUND - 1) % ${#ROLES[@]}))]}"
+
+  log "========== RONDE ${ROUND} =========="
+
+  DEV_TASK=$(cat <<EOF
+Je werkt aan AI Survival World, een hoogwaardige browser-survivalgame in de stijl van The Forest gecombineerd met Valheim.
+
+Dit is een langdurige autonome ontwikkelronde.
+
+VERPLICHT:
+1. Lees AGENTS.md, MEMORY.md, ROADMAP.md en ARCHITECTURE.md.
+2. Bekijk git status en de recente geschiedenis.
+3. Onderzoek de huidige implementatie en bestaande tests.
+4. Kies één concrete, belangrijke verbetering binnen jouw specialisatie: ${ROLE}.
+5. Implementeer die verbetering volledig. Geen oppervlakkige placeholder-oplossingen.
+6. Behoud bestaande gameplay, compatibiliteit en deterministische generatie.
+7. Behoud de hoge vegetatiedichtheid. Verminder geen aantallen bomen, struiken of planten om prestaties te verbergen.
+8. Test je wijzigingen waar mogelijk.
+9. Werk documentatie bij wanneer dat nodig is.
+10. Rapporteer gewijzigde bestanden, uitgevoerde tests, resultaten en resterende problemen.
+
+Eerdere problemen die extra aandacht verdienen:
+- terrein ziet er onnatuurlijk uit met blauwe/witte zeshoekige patronen en kleurbanden;
+- speler lijkt door de grond te kijken of terrein te clippen;
+- zwevende objecten en slabs;
+- ontbrekende natuurlijke atmosfeer en fog;
+- lage FPS.
+
+Controleer eerst of deze problemen nog bestaan in de huidige code. Verzin geen visuele testresultaten.
+
+WERKREGELS:
+- Je werkt uitsluitend in deze supervisor-worktree.
+- Geen commits, pushes, merges, resets of branchwissels.
+- Verwijder geen bestaande wijzigingen.
+- Werk grondig en lever een werkende verbetering op.
+- Als een probleem niet veilig kan worden opgelost, documenteer het.
+EOF
+)
+
+  run_agent "$ROLE" "$DEV_TIMEOUT" "$DEV_TASK" || LAST_FAILURE="Ontwikkelagent ${ROLE} faalde. Log: $LOGS/round-${ROUND}-${ROLE}.log"
+
+  if (( $(date +%s) >= DEADLINE )); then
+    break
+  fi
+
+  QA_TASK=$(cat <<EOF
+Voer een onafhankelijke kwaliteitscontrole uit op de huidige AI Survival World-worktree.
+
+1. Inspecteer git diff en git status.
+2. Controleer de wijzigingen uit ontwikkelronde ${ROUND}.
+3. Zoek bugs, regressies, onvolledige implementaties en onjuiste aannames.
+4. Voer npm test uit en daarna npm run build.
+5. Gebruik indien aanwezig de Node Map.groupBy-polyfill:
+   NODE_OPTIONS="--require=/tmp/map-groupby-polyfill.cjs"
+6. Herstel concrete fouten die door de recente wijzigingen zijn veroorzaakt.
+7. Verander geen unrelated bestanden.
+8. Verminder nooit de vegetatiedichtheid om tests of prestaties te verbeteren.
+9. Geen commits, merges, pushes, resets of branchwissels.
+
+Vorige foutmelding:
+${LAST_FAILURE}
+
+Rapporteer exact welke tests en builds zijn uitgevoerd en hun exitcodes.
+EOF
+)
+
+  run_agent "qa" "$QA_TIMEOUT" "$QA_TASK" || LAST_FAILURE="QA faalde in ronde ${ROUND}. Controleer QA-log."
+
+  log "Start onafhankelijke tests en build"
+
+  TEST_LOG="$LOGS/round-${ROUND}-tests.log"
+  BUILD_LOG="$LOGS/round-${ROUND}-build.log"
+
+  (
+    cd "$WORKTREE"
+    if [[ -f /tmp/map-groupby-polyfill.cjs ]]; then
+      NODE_OPTIONS="--require=/tmp/map-groupby-polyfill.cjs" npm test -- --testTimeout=20000
+    else
+      npm test -- --testTimeout=20000
+    fi
+  ) >"$TEST_LOG" 2>&1
+  TEST_RESULT=$?
+
+  (
+    cd "$WORKTREE"
+    npm run build
+  ) >"$BUILD_LOG" 2>&1
+  BUILD_RESULT=$?
+
+  if (( TEST_RESULT == 0 && BUILD_RESULT == 0 )); then
+    LAST_FAILURE="Tests en build slaagden in ronde ${ROUND}."
+    log "TESTS GESLAAGD - ronde ${ROUND}"
+  else
+    LAST_FAILURE="Tests exitcode=${TEST_RESULT}; build exitcode=${BUILD_RESULT}. Logs: $TEST_LOG en $BUILD_LOG"
+    log "TESTS/BUILD MISLUKT - ronde ${ROUND}"
+  fi
+
+  git -C "$WORKTREE" status --short >"$LOGS/round-${ROUND}-git-status.txt"
+
+  {
+    echo "round=$ROUND"
+    echo "time=$(date -Is)"
+    echo "role=$ROLE"
+    echo "test_exit=$TEST_RESULT"
+    echo "build_exit=$BUILD_RESULT"
+    echo "branch=$(git -C "$WORKTREE" branch --show-current)"
+    echo "commit=$(git -C "$WORKTREE" rev-parse HEAD)"
+    echo "last_failure=$LAST_FAILURE"
+  } >"$STATE/status.tmp"
+
+  mv "$STATE/status.tmp" "$STATE/status.txt"
+
+  log "Ronde ${ROUND} afgerond"
+
+  sleep 10
+done
+
+log "TIJDSLIMIET BEREIKT"
+log "Supervisor stopt. Werkbranch en wijzigingen blijven behouden."

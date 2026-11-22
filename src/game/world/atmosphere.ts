@@ -372,7 +372,11 @@ function createSpriteTexture(
     d[i * 4 + 3] = Math.round(alpha[i] * 255);
   }
   ctx.putImageData(img, 0, 0);
-  return new DynamicTexture(name, canvas, scene, false);
+  const dt = new DynamicTexture(name, canvas, scene, false);
+  // Babylon 9: canvas contents must be uploaded explicitly or the texture
+  // stays empty and the dependent materials never become render-ready.
+  dt.update();
+  return dt;
 }
 
 /**

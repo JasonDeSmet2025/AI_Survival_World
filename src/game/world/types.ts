@@ -28,14 +28,32 @@ export interface ResourceNode {
 /** A player-placed building tracked by the world state. */
 export interface BuildingData {
   id: string;
-  kind: 'campfire' | 'wall' | 'floor' | 'roof' | 'bed';
+  kind:
+    | 'campfire'
+    | 'wall'
+    | 'floor'
+    | 'roof'
+    | 'bed'
+    | 'door'
+    | 'stone_wall'
+    | 'torch'
+    | 'carpet'
+    | 'fence'
+    | 'stairs'
+    | 'workbench'
+    | 'planter'
+    | 'sign';
   x: number;
   z: number;
   y: number;
-  rot: number; // 0..1 quarter turns
+  rot: number; // 0..3 quarter turns
   ownerId: string;
   /** Fuel seconds left (campfire only). */
   fuel?: number;
+  /** Door only: swung open (passable while open). */
+  open?: boolean;
+  /** Planter only: seconds of growth accumulated (see systems/farm.ts). */
+  growth?: number;
 }
 
 /** Serializable shared world state (save file + MP snapshot). */

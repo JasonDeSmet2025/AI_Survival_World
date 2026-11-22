@@ -308,6 +308,69 @@ function paintFabric(ctx: CanvasRenderingContext2D, size: number, base: [number,
   ctx.putImageData(img, 0, 0);
 }
 
+/**
+ * Sheep's fleece: crimped locks of wool. A clumpy value-noise gives the
+ * individual locks, a horizontal crimp wave gives the combed rows and the
+ * shadow between two locks stays darker (grass-stained cream).
+ */
+function paintWool(ctx: CanvasRenderingContext2D, size: number, base: [number, number, number], seed: number): void {
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const lock = fbm(x, y, 7, seed, 2);
+      // Crimp: rows running across the fleece, warped by the lock noise.
+      const crimp = 0.5 + 0.5 * Math.sin((y / size) * Math.PI * 2 * 18 + fbm(x, y, 16, seed + 3, 2) * 5);
+      // A wool lock is a rounded bump: bright on top, dark in the seam.
+      const bump = smooth01(0.32, 0.62, lock) - (1 - smooth01(0.62, 0.9, lock)) * 0.5;
+      const dirt = fbm(x, y, 46, seed + 7, 3);
+      let v = 0.8 + 0.13 * crimp + 0.12 * bump;
+      // Grass stains: slightly warmer and darker in the dirty patches.
+      const stain = smooth01(0.55, 0.78, dirt);
+      const i = (y * size + x) * 4;
+      d[i] = base[0] * v * (1 - stain * 0.1) * 255;
+      d[i + 1] = base[1] * v * (1 - stain * 0.14) * 255;
+      d[i + 2] = base[2] * v * (1 - stain * 0.2) * 255;
+      d[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+/**
+ * Cattle hide: short hair. Hair reads as directional, so the noise is
+ * squeezed along one axis (streaks), plus large soft blotches of lighter
+ * and darker hair and a few individual bright guard hairs.
+ */
+function paintHide(ctx: CanvasRenderingContext2D, size: number, base: [number, number, number], seed: number): void {
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+  const rand = rng(seed + 17);
+  // Guard hairs: a sparse set of short bright strokes.
+  const hairs: number[][] = [];
+  for (let i = 0; i < 420; i++) hairs.push([rand() * size, rand() * size, 1 + rand() * 3]);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      // Streaky noise: high frequency across the hair, low along it.
+      const hair = fbm(x * 0.25, y * 4.5, 6, seed, 2);
+      const blotch = fbm(x, y, 52, seed + 11, 3);
+      let v = 0.78 + 0.3 * hair + 0.34 * (blotch - 0.5);
+      for (const [hx, hy, hl] of hairs) {
+        if (Math.abs(hy - y) < 1.2 && x > hx && x < hx + hl) {
+          v += 0.5;
+          break;
+        }
+      }
+      const i = (y * size + x) * 4;
+      d[i] = Math.min(1, base[0] * v) * 255;
+      d[i + 1] = Math.min(1, base[1] * v * 0.99) * 255;
+      d[i + 2] = Math.min(1, base[2] * v * 0.97) * 255;
+      d[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
 /** Rough chipped tool stone (axe / pickaxe heads). */
 function paintToolStone(ctx: CanvasRenderingContext2D, size: number, base: [number, number, number], seed: number): void {
   paintRock(ctx, size, base, seed);
@@ -383,6 +446,9 @@ export interface TextureKit {
   fabricShirt: PbrTextureSet;
   fabricPants: PbrTextureSet;
   fabricBoots: PbrTextureSet;
+  // fauna (ai/animals.ts tints these per animal, so they stay near neutral)
+  wool: PbrTextureSet;
+  hide: PbrTextureSet;
 }
 
 export function createTextureKit(scene: Scene): TextureKit {
@@ -390,6 +456,11 @@ export function createTextureKit(scene: Scene): TextureKit {
 
   const tex = (name: string, canvas: HTMLCanvasElement, srgb: boolean, repeat = 1): DynamicTexture => {
     const t = new DynamicTexture(name, canvas, scene, false);
+    // Babylon 9 creates an EMPTY GPU texture here — the painted canvas is
+    // only a backing store. Without this explicit upload the texture never
+    // becomes ready and every material using it silently fails to render
+    // (floors/walls/bark appeared invisible in-game).
+    t.update();
     t.wrapU = Texture.WRAP_ADDRESSMODE;
     t.wrapV = Texture.WRAP_ADDRESSMODE;
     // 8x anisotropy keeps planks/bark readable at grazing angles (WebGL2).
@@ -465,6 +536,11 @@ export function createTextureKit(scene: Scene): TextureKit {
       0.9,
       2,
     ),
+    // Fauna textures are near-neutral: the herd tints them per animal with
+    // albedoColor (cream sheep, black holstein, brown jersey). Repeat 3 so
+    // a lock is ~8 cm and a hair streak ~2 cm on a 1 m body.
+    wool: set('wool', (c, s) => paintWool(c, s, [0.92, 0.9, 0.85], 1010), 1.7, 3),
+    hide: set('hide', (c, s) => paintHide(c, s, [0.62, 0.55, 0.5], 1111), 0.9, 3),
   };
 }
 

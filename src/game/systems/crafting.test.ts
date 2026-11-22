@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { ITEMS, RECIPES } from '../core/items';
 import { Inventory } from './inventory';
-import { CraftSession, Crafting, type CraftTickResult } from './crafting';
+import {
+  CRAFT_GROUP_LABEL,
+  CRAFT_GROUP_ORDER,
+  CraftSession,
+  Crafting,
+  craftGroupOf,
+  handRecipes,
+  needsTable,
+  type CraftTickResult,
+} from './crafting';
 
 /** Fresh inventory stocked with exactly the inputs of `recipeId`. */
 function stockedInventory(recipeId: string): Inventory {
@@ -13,6 +22,86 @@ function stockedInventory(recipeId: string): Inventory {
 
 /** Total units of an item across all slots. */
 const units = (inv: Inventory, id: string): number => inv.count(id);
+
+describe('the tekentafel is a station (not just a speed bonus)', () => {
+  /** A bag that could afford every recipe, so only the station can refuse. */
+  function richInventory(): Inventory {
+    const inv = new Inventory();
+    const need = new Map<string, number>();
+    for (const r of RECIPES) {
+      for (const i of r.inputs) need.set(i.id, Math.max(need.get(i.id) ?? 0, i.count));
+    }
+    for (const [id, count] of need) expect(inv.add(id, count)).toBe(0);
+    return inv;
+  }
+
+  it('hand work is craftable in the open field', () => {
+    for (const r of handRecipes()) {
+      const inv = richInventory();
+      expect(Crafting.canCraft(inv, r, Infinity, false), r.id).toBe(true);
+      expect(CraftSession.start(inv, r.id, Infinity, 1, false), r.id).not.toBeNull();
+    }
+  });
+
+  it('table work is refused off the station and allowed on it', () => {
+    const tableRecipes = RECIPES.filter((r) => needsTable(r));
+    expect(tableRecipes.length).toBeGreaterThan(0);
+    for (const r of tableRecipes) {
+      const off = richInventory();
+      expect(Crafting.canCraft(off, r, Infinity, false), r.id).toBe(false);
+      expect(CraftSession.start(off, r.id, Infinity, 1, false), r.id).toBeNull();
+      // Refusing at the station level must not have touched the materials.
+      for (const i of r.inputs) expect(off.has(i.id, i.count), r.id).toBe(true);
+      const on = richInventory();
+      expect(Crafting.canCraft(on, r, Infinity, true), r.id).toBe(true);
+      expect(Crafting.craft(on, r.id, Infinity, true), r.id).toBe(r.output.id);
+    }
+  });
+
+  it('available() follows the station the player is standing at', () => {
+    const inv = richInventory();
+    const inField = Crafting.available(inv, Infinity, false).map((r) => r.id);
+    const atTable = Crafting.available(inv, Infinity, true).map((r) => r.id);
+    expect(inField).toEqual(handRecipes().map((r) => r.id));
+    expect(atTable.length).toBeGreaterThan(inField.length);
+  });
+
+  it('the table itself is hand work — the gate can never lock itself out', () => {
+    // A locked station that could only be built FROM the station would be a
+    // dead end, so this one recipe is the load-bearing exception.
+    const table = RECIPES.find((r) => r.id === 'recipe_workbench')!;
+    expect(needsTable(table)).toBe(false);
+    expect(table.unlockLevel ?? 1).toBe(1);
+    const inv = stockedInventory('recipe_workbench');
+    expect(Crafting.craft(inv, 'recipe_workbench', 1, false)).toBe('workbench');
+  });
+
+  it('puts the tekentafel at the very top of the menu', () => {
+    // The menu is the tutorial now: the first row the player sees must be the
+    // one thing that opens the rest of the tree.
+    const table = RECIPES.find((r) => r.id === 'recipe_workbench')!;
+    expect(craftGroupOf(table)).toBe('start');
+    expect(CRAFT_GROUP_ORDER[0]).toBe('start');
+    expect(CRAFT_GROUP_LABEL.start).toBe('Start');
+  });
+
+  it('a missing flag means "needs the table", never "free for all"', () => {
+    // The safe default is what keeps the tech tree honest when a recipe is
+    // added: forgetting the field is a locked row, not a leaked one.
+    expect(needsTable({ ...RECIPES.find((r) => r.id === 'recipe_wall')!, fieldRecipe: undefined })).toBe(true);
+    expect(needsTable({ ...RECIPES.find((r) => r.id === 'recipe_wall')!, fieldRecipe: true })).toBe(false);
+  });
+
+  it('every recipe has exactly one menu section', () => {
+    for (const r of RECIPES) {
+      expect(CRAFT_GROUP_ORDER, r.id).toContain(craftGroupOf(r));
+    }
+    // The explicit table is not allowed to name items that are never crafted.
+    const groups = new Set(RECIPES.map(craftGroupOf));
+    expect(groups.has('build')).toBe(true);
+    expect(groups.has('fight')).toBe(true);
+  });
+});
 
 describe('Crafting static API (unchanged legacy behaviour)', () => {
   it('canCraft reflects the inventory contents', () => {

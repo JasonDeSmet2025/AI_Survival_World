@@ -12,34 +12,121 @@ import {
   Engine,
   FreeCamera,
   Mesh,
-  MeshBuilder,
+  PointLight,
   Scene,
-  StandardMaterial,
+  TransformNode,
   Vector3,
 } from '@babylonjs/core';
 import { Conversation } from './ai/chat';
 import { Npc, NPC_PROFILES } from './ai/npc';
+import { Animal } from './ai/animals';
+import { mulberry32 } from './core/noise';
+import { ANIMALS, herdSpot, rollDrops, type AnimalKind } from './systems/fauna';
+import { CAVE_SITES, WITCH_HOME, caveKeepOut, witchKeepOut } from './world/caves';
+import { buildCaveInterior, buildWitch, buildWitchHut, type Decor } from './visual/decor';
+import {
+  animalMeleeDamage,
+  animalRangedDamage,
+  absorbDamage,
+  ARROW_AMMO,
+  canShoot,
+  canSwing,
+  inBowRange,
+  inSwingRange,
+  playerMeleeDamage,
+  validIncomingHit,
+  SHOOT_ANIM_TIME,
+  SHIELD_BLOCK_WEAR,
+  SWING_ANIM_TIME,
+} from './systems/combat';
+import {
+  POTION_BUFF_SECONDS,
+  SHOP_OFFERS,
+  SWIFT_SPEED_MULTIPLIER,
+  canAfford as offerAffordable,
+  priceLabel,
+  trade as performTrade,
+} from './systems/shop';
 import { harvestSeconds, ITEMS, RECIPES, toolForNode, YIELDS } from './core/items';
 import { InputController } from './input';
 import { Hud } from './hud/hud';
-import { MultiplayerClient, type MpMessage, type MpStatus } from './net/mp';
+import { MultiplayerClient, type MpMessage, type MpProfile, type MpStatus } from './net/mp';
+import { RemoteAvatars } from './net/avatars';
+import { DAY_LENGTH_S, ServerClock } from './net/time';
+import { playerName, resolveMpUrl, sanitizeName, setPlayerName, spawnOffset } from './net/identity';
 import { PlayerCharacter } from './player/player';
-import { PlayerController } from './player/controller';
+import { clampCameraPitch, CAM_PITCH_DEFAULT, PlayerController } from './player/controller';
+import {
+  CAM_DIST_DEFAULT,
+  FP_PITCH_REST,
+  CAMERA_SURFACE_OFFSET,
+  blendPitch,
+  bodyVisible,
+  clampCamDist,
+  isFirstPerson,
+  eyeBacklash,
+  occlusionFloor,
+  pivotHeight,
+  pitchOwner,
+  smoothCamDist,
+  zoomDistance,
+} from './systems/cameraRig';
 import { groundHeight } from './player/ground';
 import { consumeItem, isConsumable } from './systems/consume';
+import { FpsMeter } from './systems/fps';
+import { harvestToast, resolveHarvest } from './systems/harvest';
 import { addWood, burnFuel, CAMPFIRE, isLit, justDied, warmthFrom } from './systems/campfire';
-import { CookSession, COOK, isCokable } from './systems/cook';
-import { CraftSession, Crafting } from './systems/crafting';
+import { CookSession, COOK, cookHasRoom, cookOutput, isCokable } from './systems/cook';
+import { CraftSession, Crafting, BENCH_SPEED_SCALE, needsTable, nearestWorkbench } from './systems/crafting';
 import {
-  buildingPlacementHeight,
+  PLANTER_CROP,
+  PLANTER_SECONDS,
+  PLANTER_YIELD,
+  growPlanter,
+  growthOf,
+  isPlanter,
+  isRipe,
+  pickPlanter,
+  planterFraction,
+} from './systems/farm';
+import {
+  DEFAULT_BINDINGS,
+  clearControls,
+  clampMouseSens,
+  ACTION_LABEL,
+  assign as assignKey,
+  keyLabel,
+  loadControls,
+  saveControls,
+  type Action,
+  type Bindings,
+} from './systems/keybinds';
+import {
+  buildingPlatforms,
+  HEIGHT_GRID,
+  MAX_BUILD_LEVEL,
+  isBlocking,
+  isEdgeKind,
+  migrateWallGrid,
+  placementBaseY,
+  snapToCell,
+  snapToWallEdge,
   validatePlacement,
   wallSegment,
+  type Platform,
   type WallSegment,
 } from './systems/building';
 import { BuildingRenderer } from './systems/buildingMeshes';
 import { raycastTarget, type InteractTarget } from './systems/interact';
 import { Inventory, INVENTORY_SIZE, HOTBAR_SIZE, type Slot } from './systems/inventory';
 import { Save } from './systems/save';
+import {
+  describeGoal,
+  QuestLog,
+  validateQuest,
+  type QuestDef,
+  type RawQuest,
+} from './systems/quests';
 import { computeRest, type RestResult } from './systems/rest';
 import { MAX_LEVEL, Progression, XP_SOURCE, gatherXp, recipeUnlockLevel } from './systems/progress';
 import { SurvivalStats } from './systems/stats';
@@ -58,12 +145,14 @@ import {
   WORLD_SEED,
   type TerrainHandle,
 } from './world/terrain';
+import { groundSurfaceHeight } from './world/groundSurface';
 import { Atmosphere } from './world/atmosphere';
 import { Sky } from './world/sky';
 import { Water } from './world/water';
 import { populateFlora, type FloraHandle } from './world/flora';
 import { SharedWorldState } from './world/worldState';
 import { terrainRayHit } from './world/terrainRay';
+import { sanitizeReply } from './ai/reply';
 import type { BuildingData, Collider } from './world/types';
 
 const KIND_LABEL: Record<string, string> = {
@@ -73,18 +162,42 @@ const KIND_LABEL: Record<string, string> = {
   bush: 'Bessenstruik',
 };
 
-const BUILDING_KINDS: ReadonlySet<string> = new Set(['campfire', 'wall', 'floor', 'roof', 'bed']);
+const BUILDING_KINDS: ReadonlySet<string> = new Set([
+  'campfire',
+  'wall',
+  'floor',
+  'roof',
+  'bed',
+  'door',
+  'stone_wall',
+  'torch',
+  'carpet',
+  'fence',
+  'stairs',
+  'workbench',
+  'planter',
+  'sign',
+]);
 
-/** The camera stops this far in front of an occluding surface (world units). */
-const CAMERA_SURFACE_OFFSET = 0.35;
-/** The camera never comes closer than this to the player (world units). */
-const CAMERA_MIN_DIST = 2.0;
+/** How far (metres) the player can reach to place a structure. */
+const BUILD_RANGE = 12;
+
+/** Player-facing Dutch text for the placement reasons returned by validatePlacement(). */
+const PLACEMENT_MESSAGES: Record<string, string> = {
+  'cannot build underwater': 'Hier staat water',
+  'not on a valid platform': 'Hier past het niet',
+  'roof needs a wall below it': 'Bouw eerst een muur onder je dak',
+  'a building already occupies this spot': 'Hier staat al iets',
+  'too close to you': 'Te dicht bij jezelf',
+  'too far away': 'Te ver weg — loop dichterbij',
+};
+
+/**
+ * Camera radians per pixel of mouse movement at sensitivity 1 (the shipped
+ * feel). The settings menu multiplies it with 0.2 .. 3.
+ */
+const BASE_MOUSE_LOOK = 0.0022;
 /** Keep the third-person view angled down enough to show the ground. */
-
-interface RemotePlayer {
-  mesh: Mesh;
-  target: Vector3;
-}
 
 export class Game {
   private engine: Engine;
@@ -116,16 +229,107 @@ export class Game {
   private input: InputController;
 
   private npcs: Npc[] = [];
+  /**
+   * The herd: procedural sheep and cows around the camp (see ai/animals.ts
+   * + systems/fauna.ts). Deliberately NOT saved: they respawn deterministically
+   * from WORLD_SEED each session, and a killed animal stays killed for as
+   * long as you play. Multiplayer: every client runs its own local herd —
+   * hunting is not (yet) a shared protocol, unlike doors and fuel.
+   */
+  private animals: Animal[] = [];
+  // --- landmarks + combat state (see world/caves.ts, systems/combat.ts) ---
+  private decor: Decor[] = [];
+  private witchRoot: TransformNode | null = null;
+  private witchTick: ((dt: number, t: number) => void) | null = null;
+  private witchAt = new Vector3(0, -100, 0);
+  private shopOpen = false;
+  /** Combat clock (seconds of survived play) — swing/hit rate gates. */
+  private combatT = 0;
+  private lastSwingAt = -1e9;
+  /** Same clock for the bow: a draw takes SHOOT_COOLDOWN seconds. */
+  private lastShotAt = -1e9;
+  private lastHitTakenAt = -1e9;
+  private swingT = 0;
+  /** Potion buff timers (seconds remaining). */
+  private swiftT = 0;
+  private nightT = 0;
+  private nightLight: PointLight | null = null;
+  private animalSeq = 0;
+  /** In-progress hunt on an animal (hold F), mirrors `gathering`. */
+  private hunting: { id: string; progress: number } | null = null;
+  /** Animal id we already warned about while the bag had no room for loot. */
+  private animalBlockedNotified: string | null = null;
   private conversations = new Map<string, Conversation>();
+  /**
+   * Quest log. The LLM can only PROPOSE whitelisted quests (server);
+   * progress and rewards are pure game logic here (systems/quests.ts) —
+   * a chat sentence alone never completes anything.
+   */
+  private quests = new QuestLog();
   private activeNpc: Npc | null = null;
 
   private mp: MultiplayerClient | null = null;
+  /** MP chat exchange awaiting its server-side npc_reply/npc_error. */
+  private pendingChat: { npcId: string; name: string; text: string } | null = null;
+  private chatTimer: ReturnType<typeof setTimeout> | null = null;
   private mpUrl: string | null;
   private localId: string;
-  private remotes = new Map<string, RemotePlayer>();
+  /** Remote players: real bodies, facing and nametags (see net/avatars.ts). */
+  private avatars!: RemoteAvatars;
+  /** Display name other players see; also the NPC memory key on the server. */
+  private mpName = 'Speler';
+  /** The shared day/night clock — the server owns it, we follow it. */
+  private readonly worldClock = new ServerClock(DAY_LENGTH_S);
+  /** Join order, translated into a spot on the camp ring. */
+  private spawnIndex = 0;
 
   private camYaw = 0;
-  private camPitch = -0.65;
+  private camPitch = CAM_PITCH_DEFAULT;
+  /**
+   * Camera rig: how far behind the player the camera hangs. `camDistTarget`
+   * is what the wheel asked for, `camDist` what the frame renders (smoothed).
+   * 0 = first person. Both live in the device controls (see keybinds.ts), so
+   * the view a player trained yesterday is the view they wake up in.
+   */
+  private camDist = CAM_DIST_DEFAULT;
+  private camDistTarget = CAM_DIST_DEFAULT;
+  /**
+   * First person's own look angle (see cameraRig's FP_PITCH_REST). Deliberately
+   * NOT stored in the settings file: the zoom level is a habit worth
+   * remembering, the exact degrees you were looking at are not — and every
+   * stored number is a number a stale file can poison.
+   */
+  private camPitchFirst = FP_PITCH_REST;
+  /** Is the player's own body mesh allowed to be seen? (hidden in FP) */
+  private bodyShown = true;
+  /**
+   * Seconds left that the "first/third person" pill stays up after the last
+   * wheel gesture — a control you only ever need to explain once per zoom.
+   */
+  private camPillT = 0;
+  /** Debounce for saving the zoom: one write per gesture burst, not per event. */
+  private camSaveT = 0;
+  /** Last pointer-lock state pushed to the HUD (push only on change). */
+  private pointerShown = false;
+  /**
+   * Honest fps counter — fed the UNCLAMPED frame time (the simulation uses
+   * a clamped dt, which used to make the HUD report ~20 fps in a 1 fps
+   * build). See systems/fps.ts.
+   */
+  private readonly fpsMeter = new FpsMeter();
+  /**
+   * Every window listener the game registers, kept so `dispose()` can
+   * actually remove them. `removeEventListener(() => this.persist())` used
+   * to pass a NEW function (and the five `hud-*` listeners were never
+   * removed at all), so each `Game` instance leaked listeners for the life
+   * of the page.
+   */
+  private readonly windowListeners: Array<{ type: string; handler: EventListener }> = [];
+  /** Node id we already warned about while the bag had no room for it. */
+  private harvestBlockedNotified: string | null = null;
+  private craftBlockedNotified = false;
+  private cookBlockedNotified = false;
+  private disposed = false;
   private gathering: { id: string; progress: number } | null = null;
   /** Active timed-craft session (transient; never persisted). */
   private craft: CraftSession | null = null;
@@ -144,6 +348,22 @@ export class Game {
   private shadowedBuildings = new Set<Mesh>();
   private bushRegrow = new Map<string, number>();
   private craftingOpen = false;
+  /** Settings panel (O) — controls, mouse sensitivity and the world reset. */
+  private settingsOpen = false;
+  /**
+   * Device-level control setup (key map + mouse sensitivity). Lives in its own
+   * localStorage entry, NOT in the world save: it must survive a world reset
+   * and must never be uploaded as someone's progress in multiplayer.
+   */
+  private bindings: Bindings = { ...DEFAULT_BINDINGS };
+  /** Mouse look multiplier (see systems/keybinds.ts clampMouseSens). */
+  private mouseSens = 1;
+  /**
+   * True while the settings menu waits for the next key to bind. The frame
+   * loop then throws away every queued press: the key you press to rebind
+   * must not also perform the action it now drives.
+   */
+  private rebinding = false;
   /** Full inventory panel state (all 24 slots + UI mouse-cursor). */
   private invOpen = false;
   /** Stack currently held by the inventory UI cursor (outside all slots). */
@@ -152,6 +372,11 @@ export class Game {
   private invCursorFrom: number | null = null;
   /** Campfires whose "the fire has gone out" toast has already been shown. */
   private fireDiedShown = new Set<string>();
+  /**
+   * Planters whose crop just turned ripe (announce once per crop, so the
+   * prompt is not the only thing telling you the berries are ready).
+   */
+  private planterRipe = new Set<string>();
   /** Remaining seconds of the eat animation after a successful consume. */
   private eatT = 0;
   /** Remaining seconds of the landing-dip animation after a fall. */
@@ -163,12 +388,12 @@ export class Game {
    */
   private hurtT = 0;
   private buildSeq = 0;
+  /** PgUp/PgDn: how many HEIGHT_GRID steps the next placement is lifted. */
+  private buildLevel = 0;
   private deathShown = false;
   private wasExhausted = false;
   private saveTimer = 0;
   private hudTimer = 0;
-  private fpsFrames = 0;
-  private fpsTime = 0;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -212,6 +437,8 @@ export class Game {
     const keepOut = [
       { x: spawn.x, z: spawn.z, r: 5 },
       { x: this.camp.x, z: this.camp.z, r: 8 },
+      ...caveKeepOut(),
+      witchKeepOut(),
     ];
     this.floraHandle = populateFlora(this.scene, this.mats, this.world, this.colliders, keepOut);
     // The flora wind shader gets the same live sun/ambient values as the
@@ -247,33 +474,66 @@ export class Game {
       for (const m of removed) this.lighting.removeShadowCaster(m);
     };
 
-    // HUD + input
+    // HUD + input. The saved key map is read BEFORE the input controller is
+    // built, so the very first frame already answers to the player's own keys.
+    const controls = loadControls();
+    this.bindings = controls.bindings;
+    this.mouseSens = controls.mouseSens;
+    // The saved zoom is restored for BOTH fields: starting a session already
+    // halfway zoomed in means the target, not just the rendered distance, or
+    // the first frame would smooth back to the default view.
+    this.camDist = this.camDistTarget = clampCamDist(controls.camDist);
     this.hud = new Hud(hudContainer, () => this.respawn());
-    this.input = new InputController(canvas);
+    this.input = new InputController(canvas, this.bindings);
+    this.hud.setControls(this.bindings, this.mouseSens);
     this.bindHudEvents();
 
     // NPCs at the camp
     NPC_PROFILES.forEach((profile, i) => {
-      const npc = new Npc(this.scene, profile, this.camp, WORLD_SEED + i * 977);
+      const npc = new Npc(this.scene, profile, this.camp, WORLD_SEED + i * 977, this.mats);
       this.npcs.push(npc);
       this.conversations.set(profile.id, new Conversation(profile, '/api/chat'));
-      for (const m of npc.root.getChildMeshes(true)) this.lighting.addShadowCaster(m);
+      // false = ALL descendant meshes (Babylon 9 argument semantics): the
+      // body parts live under nested joint nodes, not directly on the root.
+      for (const m of npc.root.getChildMeshes(false)) this.lighting.addShadowCaster(m);
     });
 
-    // Multiplayer
-    const params = new URLSearchParams(window.location.search);
-    this.mpUrl = opts?.mpUrl ?? (params.get('mp') ? `ws://${window.location.host}/ws` : null);
-    this.localId = Math.random().toString(36).slice(2, 10);
-    if (this.mpUrl) this.initMultiplayer();
+    // The herd — killable sheep and cows grazing around the camp.
+    this.spawnFauna();
+    this.buildCaves();
+    this.buildWitchSite();
+    // Night-sight potion: a soft aura light riding the camera, zero when
+    // the buff is down so it costs nothing on normal frames.
+    this.nightLight = new PointLight('nightEye', new Vector3(0, -100, 0), this.scene);
+    this.nightLight.diffuse = new Color3(0.72, 0.82, 1);
+    this.nightLight.specular = new Color3(0.4, 0.45, 0.6);
+    this.nightLight.range = 15;
+    this.nightLight.intensity = 0;
 
-    // Restore save (solo only)
+    // Multiplayer
+    //
+    // ON by default: a second person only has to open the same URL. The old
+    // rule (`params.has('mp')`) meant everyone who did not know the secret
+    // query flag silently played in a private world and called it broken.
+    // '?solo=1' opts out; '?mp=wss://host/ws' points at another server.
+    this.mpUrl = opts?.mpUrl ?? resolveMpUrl(window.location);
+    this.mpName = playerName(typeof localStorage !== 'undefined' ? localStorage : null);
+    this.localId = Math.random().toString(36).slice(2, 10);
+    this.avatars = new RemoteAvatars(this.scene, this.mats, { labelContainer: this.hud.mpTagLayer });
+    this.hud.setMpName(this.mpName);
+    if (this.mpUrl) this.initMultiplayer();
+    else this.hud.setMpStatus('Solo — offline');
+
+    // Restore save (solo only: in multiplayer progress lives on the server,
+    // keyed by the player token — see the 'hello' handler).
     if (!this.mpUrl) this.restoreSave();
 
     // Starter items on a fresh world
-    if (!Save.read()) {
+    if (!this.mpUrl && !Save.read()) {
       this.inventory.add('wood', 5);
       this.inventory.add('stone', 2);
       this.inventory.add('berry', 3);
+      this.welcomeNudge();
     }
 
     this.refreshHud(true);
@@ -284,7 +544,8 @@ export class Game {
       this.scene.render();
     });
 
-    window.addEventListener('beforeunload', () => this.persist());
+    window.addEventListener('beforeunload', this.persistOnUnload);
+    this.windowListeners.push({ type: 'beforeunload', handler: this.persistOnUnload });
 
     // QA hook: browser-based QA scripts (headless screenshots, state
     // probes) access the live instance through window.__game. The engine
@@ -301,78 +562,297 @@ export class Game {
   private initMultiplayer(): void {
     const mp = new MultiplayerClient(
       this.mpUrl as string,
-      'Speler',
+      this.mpName,
       (m: MpMessage) => this.handleMpMessage(m),
-      (s: MpStatus) => this.hud.setMpStatus(s),
+      (s: MpStatus) => this.onMpStatus(s),
+      { storage: typeof localStorage !== 'undefined' ? localStorage : null },
     );
     mp.connect();
     this.mp = mp;
   }
 
+  /**
+   * Connection state, in words a player understands. "connected" alone told
+   * you nothing about whether you were sharing the world with anyone.
+   */
+  private onMpStatus(s: MpStatus): void {
+    if (s === 'connected') {
+      this.refreshRoster();
+    } else if (s === 'connecting') {
+      this.hud.setMpStatus('Verbinden…');
+    } else {
+      this.hud.setMpStatus('Offline — solo');
+      this.hud.setMpPlayers([]);
+      for (const id of this.avatars.ids()) this.avatars.remove(id);
+    }
+  }
+
+  /** Push the roster (names + count) to the HUD. */
+  private refreshRoster(): void {
+    this.hud.setMpPlayers(this.avatars.roster().map((r) => r.name));
+    if (this.mp?.status === 'connected') {
+      this.hud.setMpStatus(`Online — ${this.avatars.size + 1} speler${this.avatars.size === 0 ? '' : 's'}`);
+    }
+  }
+
+  /** True while the multiplayer link is up and the server is authoritative. */
+  private get mpConnected(): boolean {
+    return !!this.mp && this.mp.status === 'connected';
+  }
+
   private handleMpMessage(m: MpMessage): void {
     switch (m.t) {
-      case 'hello':
+      case 'hello': {
         this.world.apply(
           { version: 1, seed: m.seed, depleted: m.depleted, hp: m.hp, buildings: m.buildings },
           m.seed,
         );
+        migrateWallGrid(this.world.buildings);
         this.renderer.sync(this.world.buildings);
         this.floraRefresh();
+        // From now on the SERVER-assigned id identifies us (harvest echoes
+        // carry it as `by`); the pre-join random id is no longer authoritative.
+        this.localId = m.playerId;
+        // Shared clock + join-order spawn: without the ring offset a second
+        // player materialised inside the first one and both cameras clipped
+        // through the same body.
+        if (typeof m.time === 'number') this.worldClock.sync(m.time);
+        this.spawnIndex = Number.isFinite(m.spawnIndex) ? (m.spawnIndex as number) : 0;
         for (const p of m.players) {
-          if (p.id !== this.localId) this.addRemote(p.id, p.p[0], p.p[1], p.p[2]);
+          if (p.id !== this.localId) this.addRemote(p.id, p.name, p.p[0], p.p[1], p.p[2], p.r ?? 0);
         }
+        this.refreshRoster();
+        this.restoreProfile(m.me ?? null);
         break;
+      }
       case 'joined':
-        this.addRemote(m.id, 0, 0, 0);
+        // Spawn at the joiner's real position — (0,0,0) made every remote
+        // player pop at the world origin and then teleport.
+        this.addRemote(m.id, m.name, m.p?.[0] ?? 0, m.p?.[1] ?? 5, m.p?.[2] ?? 0, m.r ?? 0);
+        this.refreshRoster();
         break;
       case 'left':
-        this.removeRemote(m.id);
+        this.avatars.remove(m.id);
+        this.refreshRoster();
+        break;
+      case 'world-reset':
+        // The server wiped the shared world. Everyone starts over: local
+        // save out first, then a clean reload. (Saves written after the
+        // broadcast but before this reload die with the tab anyway.)
+        Save.clear();
+        window.location.reload();
+        return;
+      case 'renamed':
+        this.avatars.rename(m.id, m.name);
+        this.refreshRoster();
+        break;
+      case 'time':
+        // Someone slept (jump) or the routine 2 s clock refresh. Both are
+        // handled by the follow logic in frame(): only the source differs.
+        if (Number.isFinite(m.time)) this.worldClock.sync(m.time);
+        if (m.jump) this.lighting.setTimeOfDay(this.worldClock.expected());
+        break;
+      case 'fuel': {
+        // Shared campfire fuel: a log thrown on the fire by anyone keeps it
+        // burning (and cooking) for everyone.
+        const b = this.world.buildings.find((x) => x.id === m.id);
+        if (b && b.kind === 'campfire') {
+          b.fuel = Math.max(0, m.fuel);
+          if (b.fuel > 0) this.fireDiedShown.delete(b.id);
+          this.renderer.setFireState(b.id, b.fuel, 0);
+          if (m.by && m.by !== this.localId) this.hud.toast('Iemand heeft het kampvuur gevoed');
+        }
+        break;
+      }
+      case 'saved':
+        // Silent in the happy case; only a rejected upload is worth a toast.
+        if (!m.ok) this.hud.toast('Voortgang niet opgeslagen op de server');
         break;
       case 'p': {
-        const r = this.remotes.get(m.id);
-        if (r) r.target.set(m.p[0], m.p[1], m.p[2]);
+        this.avatars.setTarget(m.id, { x: m.p[0], y: m.p[1], z: m.p[2], r: m.r ?? 0 });
         break;
       }
       case 'placed':
         this.world.addBuilding(m.b);
         this.renderer.sync(this.world.buildings);
         break;
-      case 'harvested':
-        this.world.damageNode(m.id, 1);
-        if (m.hp <= 0) this.floraRefresh();
+      case 'toggle': {
+        // A door someone else swung: apply the shared flag and let the
+        // renderer's per-sync setOpen drive the hinge.
+        const b = this.world.buildings.find((x) => x.id === m.id);
+        if (b && b.kind === 'door') {
+          b.open = m.open;
+          this.renderer.sync(this.world.buildings);
+        }
         break;
+      }
+      case 'hit': {
+        // A melee hit the server just validated and forwarded. Only the
+        // VICTIM subtracts its own health; re-validate range + rate so a
+        // tampered client cannot deal damage from across the map.
+        if (m.id !== this.localId) break;
+        const atk = this.avatars.poseOf(m.by);
+        const d = atk
+          ? Math.hypot(atk.x - this.controller.pos.x, atk.z - this.controller.pos.z)
+          : Number.POSITIVE_INFINITY;
+        if (!validIncomingHit(d, m.dmg, this.combatT - this.lastHitTakenAt)) break;
+        this.lastHitTakenAt = this.combatT;
+        // A raised shield (selected hotbar slot) eats half of the blow and
+        // pays durability for it — the victim still decides what it takes.
+        const taken = this.absorb(m.dmg);
+        this.stats.takeDamage(taken);
+        this.hurtT = Math.max(this.hurtT, 0.7);
+        this.hud.toast(
+          taken < m.dmg
+            ? `Geraakt — je Schild vangt de klap (-${taken} gezondheid)`
+            : `Geraakt door een aanval (-${taken} gezondheid)!`,
+        );
+        break;
+      }
+      case 'harvested': {
+        // The server owns hp AND yield. hp is applied as an ABSOLUTE value
+        // (setNodeHp is idempotent, so the initiator seeing their own
+        // broadcast can no longer double-damage the node) and the items/XP
+        // are granted only to the harvester the server named in `by`.
+        const node = this.world.node(m.id);
+        const remaining = this.world.setNodeHp(m.id, m.hp);
+        if (node && m.by === this.localId && (m.amount ?? 0) > 0) {
+          const yieldDef = YIELDS[node.kind];
+          if (yieldDef) {
+            // The server decided the amount; report honestly how much of it
+            // reached the bag instead of claiming the full stack. In MP the
+            // server owns node hp (the harvest itself is authoritative),
+            // while bag capacity is per-player client knowledge.
+            const notFitted = this.inventory.add(yieldDef.itemId, m.amount as number);
+            const got = (m.amount as number) - notFitted;
+            this.hud.toast(
+              notFitted > 0
+                ? `+${got} ${ITEMS[yieldDef.itemId].name} — rugzak vol (${notFitted} gemist)`
+                : `+${got} ${ITEMS[yieldDef.itemId].name}`,
+            );
+            this.grantXp(gatherXp(node.kind));
+          }
+        }
+        if (remaining <= 0) this.floraRefresh();
+        break;
+      }
       case 'depleted':
         this.floraRefresh();
         break;
+      case 'regrow': {
+        // Server-authoritative bush regrowth: the local-only timer used to
+        // regrow bushes here while every other player kept them depleted.
+        const node = this.world.node(m.id);
+        if (node) {
+          this.world.setNodeHp(m.id, m.hp > 0 ? m.hp : node.maxHp);
+          this.bushRegrow.delete(m.id);
+          this.floraRefresh();
+        }
+        break;
+      }
       case 'reject':
         this.hud.toast(m.msg);
         break;
-      case 'npc_reply':
-        this.hud.addChatLine(m.npc, m.text, false);
+      case 'npc_reply': {
+        // Multiplayer replies come straight from the model: they get the
+        // same in-character hygiene the single-player Conversation applies.
+        const text = sanitizeReply(m.text) ?? '(onbegrijpelijk gepraat)';
+        this.hud.addChatLine(m.npc, text, false, m.speaker);
+        // A quest offer was validated by the server against its template
+        // table AND is re-validated client-side before the log sees it.
+        if (m.quest) this.offerQuest(m.quest as RawQuest);
+        this.settlePendingChat(m.npcId, m.npc, text);
         break;
+      }
       case 'npc_error':
-        this.hud.addChatLine(m.npc, '(server onbereikbaar)', true);
+        this.hud.addChatLine(m.npc, m.reason === 'rate_limited' ? '(te veel berichten — even wachten)' : '(server onbereikbaar)', true);
+        this.settlePendingChat(m.npcId, m.npc, null);
+        break;
+      default:
         break;
     }
   }
 
-  private addRemote(id: string, x: number, y: number, z: number): void {
-    if (this.remotes.has(id)) return;
-    const mesh = MeshBuilder.CreateCapsule(`remote_${id}`, { height: 1.7, radius: 0.32 }, this.scene);
-    const mat = new StandardMaterial(`remoteMat_${id}`, this.scene);
-    mat.diffuseColor = new Color3(0.55, 0.6, 0.75);
-    mesh.material = mat;
-    mesh.position.set(x, y, z);
-    mesh.freezeWorldMatrix();
-    this.lighting.addShadowCaster(mesh);
-    this.remotes.set(id, { mesh, target: new Vector3(x, y, z) });
+  /**
+   * Releases the chat-busy state when the server answers the pending
+   * exchange (matched by npc id, falling back to display name — replies
+   * broadcast for OTHER players' questions must not clear our busy flag).
+   * The exchange is mirrored into the local conversation transcript so MP
+   * chats keep carrying history across reconnects.
+   */
+  private settlePendingChat(npcId: string | undefined, npcName: string, reply: string | null): void {
+    const pending = this.pendingChat;
+    if (!pending) return;
+    if (!((npcId && npcId === pending.npcId) || npcName === pending.name)) return;
+    if (this.chatTimer) {
+      clearTimeout(this.chatTimer);
+      this.chatTimer = null;
+    }
+    this.pendingChat = null;
+    this.hud.setChatBusy(false);
+    const conv = this.conversations.get(pending.npcId);
+    if (conv) {
+      conv.history.push({ role: 'user', content: pending.text });
+      if (reply) conv.history.push({ role: 'assistant', content: reply });
+    }
   }
 
-  private removeRemote(id: string): void {
-    const r = this.remotes.get(id);
-    if (!r) return;
-    r.mesh.dispose();
-    this.remotes.delete(id);
+  /**
+   * The first minute of a NEW world only: the tekentafel is the real starting
+   * line of the game (everything beyond hand work waits for it), so a fresh
+   * player is told what to aim for. A save file means they already know — the
+   * nudge is never repeated, and it is not state: nothing is persisted.
+   */
+  private welcomeNudge(): void {
+    this.hud.toast(
+      'Nieuw werk: verzamel 6 hout en maak je eerste TEKENTAFEL (B → Tekentafel, dan E erbij) — aan de tafel maak je de rest',
+    );
+  }
+
+  private addRemote(id: string, name: string, x: number, y: number, z: number, r = 0): void {
+    this.avatars.add(id, name || 'Speler', { x, y, z, r });
+    for (const mesh of this.avatars.shadowMeshes()) this.lighting.addShadowCaster(mesh);
+    this.refreshRoster();
+  }
+
+  /**
+   * The progress the server handed back for THIS player (hello.me). This is
+   * what multiplayer never had: a reload used to start every player from an
+   * empty bag at the camp, while solo play had a save file.
+   */
+  private restoreProfile(me: MpProfile | null): void {
+    if (!me) {
+      // First visit to this server: the starter kit solo players get too.
+      this.inventory.add('wood', 5);
+      this.inventory.add('stone', 2);
+      this.inventory.add('berry', 3);
+      this.welcomeNudge();
+      this.refreshHud(true);
+      return;
+    }
+    if (me.name) {
+      this.mpName = me.name;
+      this.hud.setMpName(me.name);
+    }
+    this.inventory.restore(me.inventory, me.selected);
+    if (me.progress) this.progress.restore(me.progress);
+    // A player never reloads into a corpse: the server may have stored them
+    // mid-death, so respawn at the camp instead of showing the death overlay.
+    if (me.stats.dead) {
+      this.stats.respawn();
+      this.inventory.applyDeathPenalty();
+    } else {
+      this.stats.restore(me.stats);
+    }
+    const off = spawnOffset(this.spawnIndex);
+    const x = Number.isFinite(me.pos?.x) ? me.pos.x : this.camp.x + off.x;
+    const z = Number.isFinite(me.pos?.z) ? me.pos.z : this.camp.z + off.z;
+    const y = groundHeight(x, z) + 1.2;
+    this.controller.respawn(x, y, z);
+    if (Number.isFinite(me.yaw)) this.camYaw = me.yaw;
+    this.renderer.sync(this.world.buildings);
+    this.refreshHud(true);
+    this.hud.toast('Wel terug, ' + (me.name ?? this.mpName));
   }
 
   // ------------------------------------------------------------------
@@ -386,9 +866,16 @@ export class Game {
     this.inventory.restore(data.inventory, data.selected);
     this.controller.respawn(data.pos.x, data.pos.y, data.pos.z);
     this.camYaw = data.yaw;
-    this.camPitch = Math.min(data.pitch, -0.65);
+    // The saved pitch must be clamped to the PLAYABLE look range, not to the
+    // default value: Math.min(pitch, -0.65) flattened every saved upward (and
+    // most downward) glance back to the horizon on each load.
+    this.camPitch = clampCameraPitch(data.pitch);
     this.lighting.setTimeOfDay(data.elapsed);
     this.world.apply(data.world, data.world.seed || WORLD_SEED);
+    // Old saves carry stone walls on the floor grid (see systems/building.ts);
+    // re-snap them before anything reads the buildings, so physics, support
+    // and meshes all agree with the ghost preview.
+    migrateWallGrid(this.world.buildings);
     if (data.progress) this.progress.restore(data.progress);
     this.renderer.sync(this.world.buildings);
     this.floraRefresh();
@@ -396,6 +883,8 @@ export class Game {
       const saved = data.npcs?.[id];
       if (saved) conv.restore(saved);
     }
+    this.quests.restore(data.quests);
+    this.hud.setQuests(this.questHudList());
     if (this.stats.dead) {
       this.stats.respawn();
       this.inventory.applyDeathPenalty();
@@ -403,7 +892,14 @@ export class Game {
   }
 
   private persist(): void {
-    if (this.mp || this.stats.dead) return;
+    if (this.stats.dead) return;
+    if (this.mp) {
+      // Multiplayer: progress belongs to the SERVER, not to this browser —
+      // writing it to localStorage would mix several players' saves into one
+      // file. Closing the tab still counts as a save, so flush a snapshot.
+      if (this.mp.status === 'connected') this.mp.sendSave(this.profileSnapshot());
+      return;
+    }
     // A stack held by the inventory UI cursor is not in any slot yet; put
     // it back temporarily so the save never loses it. `place()` swaps the
     // cursor stack with whatever sits in the origin slot (or merges into
@@ -430,6 +926,7 @@ export class Game {
     );
     data.npcs = {};
     for (const [id, conv] of this.conversations) data.npcs[id] = conv.serialize();
+    data.quests = this.quests.serialize();
     Save.write(data);
     if (cursorFrom !== null) {
       if (this.invCursor) {
@@ -488,15 +985,173 @@ export class Game {
   // ------------------------------------------------------------------
 
   private bindHudEvents(): void {
-    window.addEventListener('hud-hotbar-click', (e: Event) => {
+    // Registered through `listen()` so dispose() detaches every one of them.
+    this.listen('hud-hotbar-click', (e: Event) => {
       this.inventory.select((e as CustomEvent<number>).detail);
       this.refreshHud(true);
     });
-    window.addEventListener('hud-craft-click', (e: Event) => this.doCraft((e as CustomEvent<string>).detail));
-    window.addEventListener('hud-inv-slot-click', (e: Event) => this.handleInvSlotClick((e as CustomEvent<number>).detail));
-    window.addEventListener('hud-chat-send', (e: Event) => void this.sendChat((e as CustomEvent<string>).detail));
-    window.addEventListener('hud-chat-close', () => this.closeChat());
+    this.listen('hud-craft-click', (e: Event) => this.doCraft((e as CustomEvent<string>).detail));
+    this.listen('hud-inv-slot-click', (e: Event) => this.handleInvSlotClick((e as CustomEvent<number>).detail));
+    this.listen('hud-chat-send', (e: Event) => void this.sendChat((e as CustomEvent<string>).detail));
+    this.listen('hud-chat-close', () => this.closeChat());
+    this.listen('hud-quest-accept', (e: Event) => this.onQuestAccept((e as CustomEvent<string>).detail));
+    this.listen('hud-quest-decline', (e: Event) => this.onQuestDecline((e as CustomEvent<string>).detail));
+    this.listen('hud-mp-name', (e: Event) => this.setPlayerName((e as CustomEvent<string>).detail));
+    this.listen('hud-settings-close', () => this.setSettingsOpen(false));
+    this.listen('hud-reset-world', () => this.resetWorld());
+    this.listen('hud-shop-close', () => this.setShopOpen(false));
+    this.listen('hud-trade', (e: Event) => this.doTrade((e as CustomEvent<string>).detail));
+    // --- Settings menu: controls. The HUD only captures the pressed key and
+    // reports it; validating, applying and storing it is decided here (the
+    // rules live in systems/keybinds.ts, which is unit-tested).
+    this.listen('hud-rebind-start', () => this.beginRebind());
+    this.listen('hud-rebind-cancel', () => this.endRebind());
+    this.listen('hud-rebind', (e: Event) =>
+      this.applyRebind((e as CustomEvent<{ action: Action; code: string }>).detail),
+    );
+    this.listen('hud-sensitivity', (e: Event) => {
+      this.mouseSens = clampMouseSens((e as CustomEvent<number>).detail);
+      this.hud.setControls(this.bindings, this.mouseSens);
+      this.saveControls();
+    });
+    this.listen('hud-keybinds-reset', () => {
+      this.bindings = { ...DEFAULT_BINDINGS };
+      this.mouseSens = 1;
+      // The zoom lives in the same stored file as the keys and the
+      // sensitivity, so the button that clears that file must clear the view
+      // too — a "reset controls" that left the player stuck in first person
+      // would feel like the button only half-worked.
+      this.camDist = this.camDistTarget = CAM_DIST_DEFAULT;
+      this.camSaveT = 0;
+      this.input.setBindings(this.bindings);
+      this.hud.setControls(this.bindings, this.mouseSens);
+      clearControls();
+      this.hud.toast('Besturing teruggezet naar standaard');
+    });
   }
+
+  /**
+   * Persist the device-level control setup (key map, mouse sensitivity and how
+   * far the camera hangs). All three are preferences of this machine, not of
+   * the world, so they survive a world reset and never travel in multiplayer.
+   */
+  private saveControls(): void {
+    saveControls({
+      bindings: this.bindings,
+      mouseSens: this.mouseSens,
+      camDist: this.camDistTarget,
+    });
+  }
+
+  /** The settings menu is listening for a key. Freeze all game presses. */
+  private beginRebind(): void {
+    this.rebinding = true;
+    this.input.clearPresses();
+  }
+
+  private endRebind(): void {
+    if (!this.rebinding) return;
+    this.rebinding = false;
+    this.input.clearPresses();
+    this.hud.setRebinding(null);
+  }
+
+  /**
+   * Apply a captured key to an action. Refused binds (a key another action
+   * already answers to) leave the map untouched and say why, in the panel.
+   */
+  private applyRebind(detail: { action: Action; code: string }): void {
+    if (!detail || !detail.action || !detail.code) return;
+    const result = assignKey(this.bindings, detail.action, detail.code);
+    this.rebinding = false;
+    this.input.clearPresses();
+    this.hud.setRebinding(null);
+    if (!result.ok) {
+      this.hud.setControls(this.bindings, this.mouseSens, result.reason);
+      this.hud.toast(result.reason ?? 'Kan die toets niet gebruiken');
+      return;
+    }
+    this.bindings = result.bindings;
+    this.input.setBindings(this.bindings);
+    this.saveControls();
+    this.hud.setControls(this.bindings, this.mouseSens);
+    this.hud.toast(`${keyLabel(detail.code)} — ${ACTION_LABEL[detail.action]}`);
+  }
+
+  /**
+   * Open/close the settings panel. Opening releases the pointer lock (the
+   * same courtesy the MP name field gives): pointing a button and steering
+   * the camera are mutually exclusive.
+   */
+  private setSettingsOpen(open: boolean): void {
+    this.settingsOpen = open;
+    if (!open) this.endRebind();
+    this.hud.setSettings(open, this.mpConnected);
+    if (open) {
+      // The panel shows the LIVE key map, so what you see is what you play.
+      this.hud.setControls(this.bindings, this.mouseSens);
+      try {
+        document.exitPointerLock?.();
+      } catch {
+        /* not locked, nothing to release */
+      }
+    }
+  }
+
+  /**
+   * The settings-panel world reset. The HUD button made the player confirm
+   * twice, so this is decisive. Since every session is MP-connected (the
+   * server owns the world), the wipe goes THROUGH the server: it clears the
+   * shared state and broadcasts world-reset, and every client — this one
+   * included — clears its local save and reloads. True solo (?solo=1) just
+   * wipes localStorage.
+   */
+  private resetWorld(): void {
+    if (this.mpConnected) {
+      this.mp!.sendReset();
+      this.hud.toast('Serverwereld wordt gewist…');
+      return; // the world-reset broadcast reloads us like everyone else
+    }
+    Save.clear();
+    window.location.reload();
+  }
+
+  /** Rename yourself for everyone (and remember it for the next visit). */
+  private setPlayerName(raw: string): void {
+    const clean = sanitizeName(raw);
+    if (!clean) {
+      this.hud.toast('Die naam is leeg — niets gewijzigd');
+      return;
+    }
+    this.mpName = clean;
+    setPlayerName(clean, typeof localStorage !== 'undefined' ? localStorage : null);
+    this.hud.setMpName(clean);
+    if (this.mp) this.mp.setName(clean);
+    this.hud.toast(`Je speelt nu als ${clean}`);
+  }
+
+  /** This player's progress in the shape the server store validates. */
+  private profileSnapshot(): MpProfile {
+    return {
+      name: this.mpName,
+      stats: this.stats.snapshot(),
+      inventory: this.inventory.serialize(),
+      selected: this.inventory.selected,
+      pos: { x: this.controller.pos.x, y: this.controller.pos.y, z: this.controller.pos.z },
+      yaw: this.camYaw,
+      progress: this.progress.snapshot(),
+    };
+  }
+
+  /** Register a window listener that `dispose()` is guaranteed to remove. */
+  private listen(type: string, handler: EventListener): void {
+    window.addEventListener(type, handler);
+    this.windowListeners.push({ type, handler });
+  }
+
+  /** Stable identity for the unload hook (a new arrow function per call
+   *  could never be removed again, which leaked the whole Game). */
+  private readonly persistOnUnload: EventListener = () => this.persist();
 
   private doCraft(recipeId: string): void {
     if (this.stats.dead) return;
@@ -514,14 +1169,67 @@ export class Game {
       this.hud.toast(`Vergrend — vereist level ${recipeUnlockLevel(recipe)}`);
       return;
     }
-    const session = CraftSession.start(this.inventory, recipeId, this.progress.level);
-    if (!session) {
+    // The station gate: beyond hand work you need your OWN tekentafel nearby
+    // (systems/crafting.ts). Checked before the material complaint, because
+    // "loop naar je tafel" is the actionable answer, not "je hebt X niet".
+    if (needsTable(recipe) && !this.atWorkbench()) {
+      this.hud.toast('Dit maak je alleen aan je tekentafel — loop erheen (of druk E bij je tafel)');
+      return;
+    }
+    if (!recipe.inputs.every((i) => this.inventory.has(i.id, i.count))) {
       this.hud.toast('Niet genoeg materialen');
       return;
     }
+    const session = CraftSession.start(
+      this.inventory,
+      recipeId,
+      this.progress.level,
+      this.benchScale(),
+    );
+    if (!session) {
+      // Unlocked + affordable (checked above), so the only reason left is
+      // that the finished item has nowhere to go.
+      this.hud.toast(`Rugzak vol — geen ruimte voor ${ITEMS[recipe.output.id].name}`);
+      return;
+    }
     this.craft = session;
-    this.hud.toast(`Maken: ${ITEMS[session.recipe.output.id].name} (${session.duration}s) — B/Esc om af te breken`);
+    this.hud.toast(`Maken: ${ITEMS[session.recipe.output.id].name} (${Math.round(session.duration)}s) — B/Esc om af te breken`);
     this.refreshHud(true);
+  }
+
+  /**
+   * True while the player stands within BENCH_RADIUS of their OWN tekentafel
+   * (workbench). One question, two consequences: the table recipes become
+   * craftable here and the craft timer runs BENCH_SPEED_SCALE faster.
+   */
+  private atWorkbench(): boolean {
+    return nearestWorkbench(this.world.buildings, this.controller.pos, this.localId) !== null;
+  }
+
+  /**
+   * Craft-speed multiplier for the session about to start: 1.4x while the
+   * player stands at their OWN workbench (systems/crafting.ts). Asked and
+   * answered once, at the start — walking away mid-craft does not retroactively
+   * undo the workshop's help.
+   */
+  private benchScale(): number {
+    return this.atWorkbench() ? BENCH_SPEED_SCALE : 1;
+  }
+
+  /**
+   * What a blow really costs while a shield is in hand: half the damage, and
+   * the shield pays durability for absorbing it. Everything else (bare hands,
+   * a pickaxe) takes the full amount.
+   */
+  private absorb(amount: number): number {
+    if (!(amount > 0)) return 0;
+    const held = this.selectedItemId();
+    const after = absorbDamage(amount, held);
+    if (after < amount) {
+      const wear = wearTool(this.inventory, this.inventory.selected, SHIELD_BLOCK_WEAR);
+      if (wear.broke) this.hud.toast('Je schild is aan gruzelementen geslagen!');
+    }
+    return after;
   }
 
   /** Cancel the active craft: inputs were never consumed, so nothing is lost. */
@@ -620,12 +1328,98 @@ export class Game {
     if (!npc) return;
     const conv = this.conversations.get(npc.profile.id);
     if (!conv) return;
+    // Real conversation = real quest progress (talk goals). Counted here,
+    // never inferred from chat content.
+    this.settleQuests(this.quests.progress({ type: 'talk', target: npc.profile.id, count: 1 }));
     this.hud.addChatLine('Jij', text);
     this.hud.setChatBusy(true);
-    const res = await conv.send(text, { playerState: this.playerStateSummary() });
+    if (this.mpConnected) {
+      // Multiplayer: the server performs THE single LLM call and answers
+      // with npc_reply/npc_error (also broadcast, so other players see the
+      // conversation). This path used to run conv.send() AND mp.sendChat(),
+      // producing two gateway calls and two reply bubbles per message.
+      this.pendingChat = { npcId: npc.profile.id, name: npc.profile.name, text };
+      if (this.chatTimer) clearTimeout(this.chatTimer);
+      this.chatTimer = setTimeout(() => {
+        this.chatTimer = null;
+        if (!this.pendingChat) return;
+        this.hud.addChatLine(this.pendingChat.name, '(server onbereikbaar)', true);
+        this.pendingChat = null;
+        this.hud.setChatBusy(false);
+      }, 20_000);
+      this.mp!.sendChat(
+        { id: npc.profile.id, name: npc.profile.name, personality: npc.profile.persona },
+        text,
+        { playerState: this.playerStateSummary(), quests: this.questContext() },
+        conv.history.slice(-12),
+      );
+      return;
+    }
+    const res = await conv.send(text, { playerState: this.playerStateSummary(), quests: this.questContext() });
     this.hud.addChatLine(npc.profile.name, res.reply, res.source === 'fallback');
     this.hud.setChatBusy(false);
-    this.mp?.sendChat({ id: npc.profile.id, name: npc.profile.name, personality: npc.profile.persona }, text, { playerState: this.playerStateSummary() });
+    if (res.quest) this.offerQuest(res.quest satisfies RawQuest);
+  }
+
+  // ------------------------------------------------------------------
+  // Quests (systems/quests.ts does the counting; this is the wiring)
+  // ------------------------------------------------------------------
+
+  /** Id lists the server uses ONLY to suppress duplicate quest offers. */
+  private questContext(): { active: string[]; completed: string[] } {
+    return { active: this.quests.activeIds(), completed: this.quests.completedIds };
+  }
+
+  private questHudList(): Array<{ id: string; title: string; text: string }> {
+    return this.quests.list().map((a) => ({
+      id: a.quest.id,
+      title: a.quest.title,
+      text: describeGoal(a.quest, a.progress),
+    }));
+  }
+
+  /** A (server-validated) quest offer arrives from chat: show it in the HUD. */
+  private offerQuest(raw: RawQuest | null | undefined): void {
+    const q = this.quests.offer(validateQuest(raw));
+    if (!q) return;
+    this.hud.showQuestOffer(q.id, q.title, q.desc, describeGoal(q, 0), q.reward.xp);
+  }
+
+  private onQuestAccept(id: string): void {
+    const q = this.quests.accept(id);
+    if (!q) return;
+    this.hud.toast(`Missie aangenomen: ${q.title}`);
+    this.hud.setQuests(this.questHudList());
+    this.conversations.get(q.npc)?.absorbEvent(`De speler heeft je missie "${q.title}" aangenomen.`);
+  }
+
+  private onQuestDecline(id: string): void {
+    const q = this.quests.decline(id);
+    if (!q) return;
+    this.hud.setQuests(this.questHudList());
+    this.conversations.get(q.npc)?.absorbEvent(`De speler heeft je missie "${q.title}" afgewezen.`);
+  }
+
+  /** Pay out completed quests exactly once (XP + validated items). */
+  private settleQuests(done: QuestDef[]): void {
+    if (!done.length) return;
+    for (const q of done) {
+      this.hud.toast(`Missie voltooid: ${q.title} (+${q.reward.xp} XP)`);
+      if (q.reward.xp > 0) this.grantXp(q.reward.xp);
+      for (const it of q.reward.items) {
+        // Inventory.add returns what did NOT fit — a full bag must not
+        // silently destroy quest rewards (the old capacity bug class).
+        const left = this.inventory.add(it.id, it.count);
+        if (left > 0) {
+          this.hud.toast(`Rugzak vol — ${left} × ${ITEMS[it.id]?.name ?? it.id} niet ontvangen`);
+        }
+      }
+      // The NPC who gave it heard about the deed through the game, not
+      // through the model: this is a durable memory note, fed into prompts.
+      this.conversations.get(q.npc)?.addMemory(`Missie voltooid: ${q.title}.`);
+    }
+    this.hud.setQuests(this.questHudList());
+    this.refreshHud(true);
   }
 
   private playerStateSummary(): string {
@@ -633,12 +1427,16 @@ export class Game {
     const hh = Math.floor(t * 24);
     const mm = Math.floor((t * 24 - hh) * 60);
     const has = [...new Set(this.inventory.slots.filter(Boolean).map((s) => s!.id))].slice(0, 8);
+    const aq = this.quests.list();
     return (
       `Honger ${Math.round(this.stats.hunger)}%, dorst ${Math.round(this.stats.thirst)}%, ` +
       `gezonddend ${Math.round(this.stats.health)}%, temperatuur ${this.stats.temperature.toFixed(0)}°C, ` +
       `uur ${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}, niveau ${this.progress.level}. ` +
-      `Bezit: ${has.length ? has.map((id) => ITEMS[id].name).join(', ') : 'niets'}.`
-    );
+      (aq.length
+        ? `Lopende missies: ${aq.map((a) => `${a.quest.title} (${a.progress}/${a.quest.goal.count})`).join('; ')}. `
+        : 'De speler heeft geen openstaande missies. ')
+    ) +
+      `Bezit: ${has.length ? has.map((id) => ITEMS[id].name).join(', ') : 'niets'}.`;
   }
 
   private openChat(npc: Npc): void {
@@ -671,6 +1469,40 @@ export class Game {
         targets.push({ kind: 'campfire', id: b.id, x: b.x, y: b.y + 0.5, z: b.z, radius: 1.9 });
       } else if (b.kind === 'bed') {
         targets.push({ kind: 'bed', id: b.id, x: b.x, y: b.y + 0.6, z: b.z, radius: 1.4 });
+      } else if (b.kind === 'door') {
+        targets.push({ kind: 'door', id: b.id, x: b.x, y: b.y + 1, z: b.z, radius: 1.3 });
+      } else if (b.kind === 'planter') {
+        targets.push({ kind: 'planter', id: b.id, x: b.x, y: b.y + 0.5, z: b.z, radius: 1.2 });
+      } else if (b.kind === 'workbench' && b.ownerId === this.localId) {
+        // Own table only, exactly like the speed bonus: a friend's table is
+        // not a station you built, earned or can lose.
+        targets.push({ kind: 'workbench', id: b.id, x: b.x, y: b.y + 0.9, z: b.z, radius: 1.8 });
+      }
+    }
+    for (const a of this.animals) {
+      if (!a.alive) continue;
+      const p = a.position;
+      targets.push({
+        kind: 'animal',
+        id: a.id,
+        x: p.x,
+        y: p.y + (a.kind === 'cow' ? 0.8 : 0.55),
+        z: p.z,
+        radius: a.kind === 'cow' ? 1.15 : 0.85,
+      });
+    }
+    // The witch stands by her cauldron and always trades.
+    if (this.witchRoot) {
+      targets.push({ kind: 'witch', x: this.witchAt.x, y: this.witchAt.y, z: this.witchAt.z, radius: 1.6 });
+    }
+    // In multiplayer a friend is only a target while you hold the sword:
+    // otherwise they would shadow the campfire/bed prompts behind them.
+    if (this.mpConnected && this.selectedItemId() === 'sword') {
+      for (const id of this.avatars.ids()) {
+        const pose = this.avatars.poseOf(id);
+        if (!pose) continue;
+        if (Math.hypot(pose.x - this.controller.pos.x, pose.z - this.controller.pos.z) > 12) continue;
+        targets.push({ kind: 'player', id, x: pose.x, y: pose.y + 1.1, z: pose.z, radius: 0.8 });
       }
     }
     // Water: ray vs sea-level plane
@@ -724,6 +1556,15 @@ export class Game {
         // re-lights the fire instead of failing on a dead fire).
         const sel = this.selectedItemId();
         if (isLit(b.fuel) && isCokable(sel) && this.inventory.count(sel) > 0 && this.fireDistance(b) <= COOK.radius) {
+          // No room for the cooked result? Say so instead of silently
+          // falling through to the "add wood" branch (which used to eat the
+          // player's wood when the cook could never finish).
+          if (!cookHasRoom(this.inventory, sel)) {
+            const out = cookOutput(sel);
+            const name = out ? (ITEMS[out]?.name ?? out) : 'het gerecht';
+            this.hud.toast(`Rugzak vol — geen ruimte voor ${name}`);
+            return;
+          }
           const session = CookSession.start(sel, this.inventory, { id: b.id, fuel: b.fuel });
           if (session) {
             this.cook = session;
@@ -743,6 +1584,9 @@ export class Game {
         // The added log re-lights a dead fire as well.
         this.fireDiedShown.delete(b.id);
         this.renderer.setFireState(b.id, b.fuel, 0);
+        // Fuel is world state: tell the server, or your friend's fire stays
+        // out (and their cooking cancels) while yours burns merrily.
+        if (this.mpConnected) this.mp!.sendFuel(b.id, b.fuel);
         this.hud.toast(`Hout toegevoegd (+${CAMPFIRE.fuelPerWood}s)`);
         break;
       }
@@ -752,7 +1596,7 @@ export class Game {
           return;
         }
         this.stats.thirst = Math.min(100, this.stats.thirst + 30);
-        this.hud.toast('GeDRONKEN (+30)');
+        this.hud.toast('Gedronken (+30 dorst)');
         break;
       }
       case 'bed': {
@@ -760,47 +1604,167 @@ export class Game {
         if (b) this.startSleep(b);
         break;
       }
+      case 'door': {
+        const b = this.world.buildings.find((x) => x.id === target.id);
+        if (!b) break;
+        b.open = !b.open;
+        // The renderer swings the live hinge on the next sync — no rebuild.
+        this.renderer.sync(this.world.buildings);
+        // A shut door blocks your friend too: the flag is shared world state.
+        if (this.mpConnected) this.mp!.sendToggle(b.id, !!b.open);
+        this.hud.toast(b.open ? 'Deur geopend' : 'Deur gesloten');
+        break;
+      }
+      case 'planter': {
+        const b = this.world.buildings.find((x) => x.id === target.id);
+        if (!b) break;
+        if (!isRipe(b)) {
+          const pct = Math.round(planterFraction(b) * 100);
+          this.hud.toast(`De bessen zijn nog niet rijp (${pct}%)`);
+          break;
+        }
+        const r = pickPlanter(b, this.inventory);
+        if (!r.picked) {
+          this.hud.toast(
+            r.reason === 'no-room'
+              ? `Rugzak vol — de bessen blijven aan de plant`
+              : 'Hier is niets te plukken',
+          );
+          break;
+        }
+        this.hud.toast(
+          `Oogst uit de bloempot: ${r.gained} ${ITEMS[PLANTER_CROP].name}` +
+            (r.missed > 0 ? ` (${r.missed} past niet in de rugzak)` : ''),
+        );
+        // Same XP rule as picking a wild bush, scaled to what arrived.
+        this.grantXp(Math.max(1, Math.round(gatherXp('bush') * (r.gained / PLANTER_YIELD))));
+        this.settleQuests(this.quests.progress({ type: 'gather', target: PLANTER_CROP, count: r.gained }));
+        this.refreshHud(true);
+        break;
+      }
+      case 'workbench': {
+        // Standing at your own tekentafel and pressing E opens the station
+        // menu — the same list B shows, but now every row is unlocked because
+        // the station question is answered by actually being there.
+        this.craftingOpen = !this.craftingOpen;
+        if (this.craftingOpen) {
+          this.hud.toast('Tekentafel — alle recepten zijn nu beschikbaar (B of Esc sluit)');
+        }
+        this.refreshHud(true);
+        break;
+      }
+      case 'witch': {
+        this.setShopOpen(!this.shopOpen);
+        if (this.shopOpen) this.hud.toast('De heks grijnst: "Materialen ruil ik, geen vriendjes."');
+        break;
+      }
+      case 'player':
+        // Attacking is LMB (see tryMeleeAttack); E on a person does nothing.
+        break;
       default:
         break;
     }
   }
 
+  /**
+   * Where a building item would land: the grid cell the camera aims at, the
+   * quarter-turn rotation, and the base height — the ground snapped to the
+   * shared height grid (plus the PgUp/PgDn build level), or the exact top of
+   * whatever already stands there (a wall on a deck, a second storey, a roof
+   * on its walls).
+   *
+   * Floors, roofs, beds and fires snap to cell CENTRES; walls snap to cell
+   * EDGES (snapToWallEdge), so a wall stands on the border line of the deck
+   * instead of in the middle of the floor.
+   *
+   * The ghost preview and the actual placement read this ONE function, so a
+   * green ghost always lands exactly where it is shown.
+   */
+  private placementFor(kind: BuildingData['kind']): {
+    x: number;
+    z: number;
+    rot: number;
+    baseY: number;
+    groundY: number;
+    error: string | null;
+  } | null {
+    const ground = this.groundUnderCamera(BUILD_RANGE + 2);
+    if (!ground) return null;
+    // Snap to the construction grid: floors and roofs land on cell centres,
+    // walls and doors on the cell edges between them, all exactly one module wide.
+    const edge = isEdgeKind(kind) ? snapToWallEdge(ground.x, ground.z) : null;
+    const centre = edge ?? snapToCell(ground.x, ground.z);
+    const cell = { x: centre.x, z: centre.z };
+    const dx = cell.x - this.controller.pos.x;
+    const dz = cell.z - this.controller.pos.z;
+    const rot = edge
+      ? edge.rot
+      : ((Math.round(Math.atan2(dx, dz) / (Math.PI / 2)) % 4) + 4) % 4;
+    const groundY = groundHeight(cell.x, cell.z);
+    const baseY = placementBaseY(
+      kind,
+      cell.x,
+      cell.z,
+      rot,
+      this.world.buildings,
+      groundHeight,
+      this.buildLevel,
+    );
+    let error: string | null = null;
+    if (Math.hypot(dx, dz) > BUILD_RANGE) error = 'too far away';
+    else if (groundY < SEA_LEVEL) error = 'cannot build underwater';
+    else
+      error = validatePlacement(
+        kind,
+        cell.x,
+        cell.z,
+        baseY,
+        this.world.buildings,
+        this.controller.pos,
+        groundHeight,
+        SEA_LEVEL,
+        rot,
+      );
+    return { x: cell.x, z: cell.z, rot, baseY, groundY, error };
+  }
+
+  /** PgUp/PgDn: lift or lower the next placement by one HEIGHT_GRID step. */
+  private adjustBuildLevel(delta: number): void {
+    const next = Math.min(MAX_BUILD_LEVEL, Math.max(0, this.buildLevel + delta));
+    if (next === this.buildLevel) {
+      if (this.buildLevel !== 0) this.hud.toast('Bouwhoogte: maximaal');
+      return;
+    }
+    this.buildLevel = next;
+    const m = (this.buildLevel * HEIGHT_GRID).toFixed(1).replace('.', ',');
+    this.hud.toast(
+      this.buildLevel === 0 ? 'Bouwhoogte: grondniveau' : `Bouwhoogte: +${m} m`,
+    );
+  }
+
   private tryPlaceBuilding(kind: BuildingData['kind']): void {
-    const ground = this.groundUnderCamera(14);
-    if (!ground) {
+    const spot = this.placementFor(kind);
+    if (!spot) {
       this.hud.toast('Richt je blik op de grond om te bouwen');
       return;
     }
-    const dx = ground.x - this.controller.pos.x;
-    const dz = ground.z - this.controller.pos.z;
-    const rot = ((Math.round(Math.atan2(dx, dz) / (Math.PI / 2)) % 4) + 4) % 4;
-    // Mesh-exact ground: the building must sit where the player's feet are,
-    // not on the (coarser) analytic height curve — that mismatch is what
-    // made placed structures float or sink on slopes.
-    const centerY = groundHeight(ground.x, ground.z);
-    const groundY = buildingPlacementHeight(kind, ground.x, ground.z, rot, groundHeight);
-    const placementError = validatePlacement(
-      kind, ground.x, ground.z, centerY,
-      this.world.buildings, this.controller.pos, groundHeight, SEA_LEVEL,
-    );
-    if (placementError) {
-      this.hud.toast(placementError === 'cannot build underwater' ? 'Hier staat water' : 'Hier past het niet');
-      return;
-    }
-    if (centerY < SEA_LEVEL) {
-      this.hud.toast('Hier staat water');
+    if (spot.error) {
+      this.hud.toast(PLACEMENT_MESSAGES[spot.error] ?? 'Hier past het niet');
       return;
     }
     if (this.inventory.remove(kind, 1) === 1) {
       const b: BuildingData = {
         id: `b_${this.localId}_${++this.buildSeq}`,
         kind,
-        x: ground.x,
-        z: ground.z,
-        y: groundY,
-        rot,
+        x: spot.x,
+        z: spot.z,
+        y: spot.baseY,
+        rot: spot.rot,
         ownerId: this.localId,
         fuel: kind === 'campfire' ? CAMPFIRE.initialFuel : undefined,
+        // A planter starts as an empty tray: growth is owned by whoever
+        // planted it (systems/farm.ts), so it needs a number from day zero.
+        growth: kind === 'planter' ? 0 : undefined,
       };
       this.world.addBuilding(b);
       this.renderer.sync(this.world.buildings);
@@ -809,6 +1773,7 @@ export class Game {
       this.hud.toast('Gebouwd');
       // Progression: placing a structure pays XP.
       this.grantXp(XP_SOURCE.build);
+      this.settleQuests(this.quests.progress({ type: 'build', target: kind, count: 1 }));
     } else {
       this.hud.toast('Je hebt dit bouwmateriaal niet meer');
     }
@@ -828,7 +1793,10 @@ export class Game {
   private updateGathering(dt: number, target: { target: InteractTarget; distance: number } | null): void {
     // The player stands still and works while a craft or cook is in progress.
     if (this.craft || this.cook) {
-      if (this.gathering) this.gathering = null;
+      if (this.gathering || this.hunting) {
+        this.gathering = null;
+        this.hunting = null;
+      }
       return;
     }
     // While the inventory panel is open no slot may change underneath the
@@ -836,15 +1804,37 @@ export class Game {
     // make the held stack unplaceable when the panel closes (silent item
     // loss). Gathering pauses for the duration the panel is open.
     if (this.invOpen) {
+      if (this.gathering || this.hunting) {
+        this.gathering = null;
+        this.hunting = null;
+      }
+      this.hud.setProgress(null);
+      return;
+    }
+    if (!target || !this.input.harvest) {
+      if (this.gathering || this.hunting) {
+        this.gathering = null;
+        this.hunting = null;
+      }
+      this.hud.setProgress(null);
+      return;
+    }
+    // Hunting rides the SAME hold-F key as gathering — one branch per
+    // target kind, sharing the progress bar and the no-loss bag rules.
+    if (target.target.kind === 'animal') {
       if (this.gathering) this.gathering = null;
+      this.updateHunting(dt, target.target);
+      return;
+    }
+    if (target.target.kind !== 'node') {
+      if (this.gathering || this.hunting) {
+        this.gathering = null;
+        this.hunting = null;
+      }
       this.hud.setProgress(null);
       return;
     }
-    if (!target || target.target.kind !== 'node' || !this.input.harvest) {
-      this.gathering = null;
-      this.hud.setProgress(null);
-      return;
-    }
+    if (this.hunting) this.hunting = null;
     const node = this.world.node(target.target.id);
     if (!node || this.world.isDepleted(node.id)) {
       this.gathering = null;
@@ -866,26 +1856,65 @@ export class Game {
       }
     }
     this.hud.setProgress(Math.min(1, g.progress));
-    if (g.progress >= 1) {
+    if (g.progress < 1) return;
+
+    // The effective tool grants a +1 bonus item (toolForNode is the
+    // single source of truth, shared with harvest speed and wear).
+    const bonus = toolForNode(node.kind) === tool ? 1 : 0;
+    if (this.mpConnected) {
+      // Server-authoritative mode: hp, yield AND XP are decided by the
+      // server and echoed back through 'harvested'. Nothing is applied
+      // locally — the old local damage + yield + fire-and-forget send is
+      // what made nodes deplete twice as fast and inventories diverge.
       this.gathering = null;
       this.hud.setProgress(null);
-      const yieldDef = YIELDS[node.kind];
-      if (!yieldDef) return;
-      // The effective tool grants a +1 bonus item (toolForNode is the
-      // single source of truth, shared with harvest speed and wear).
-      const bonus = toolForNode(node.kind) === tool ? 1 : 0;
-      const amount = yieldDef.min + Math.floor(Math.random() * (yieldDef.max - yieldDef.min + 1)) + bonus;
-      this.inventory.add(yieldDef.itemId, amount);
-      this.hud.toast(`+${amount} ${ITEMS[yieldDef.itemId].name}`);
-      // Progression: gathering pays XP per node kind.
-      this.grantXp(gatherXp(node.kind));
-      const remaining = this.world.damageNode(node.id, 1);
-      this.mp?.sendHarvest(node.id);
-      if (remaining <= 0) {
-        this.floraRefresh();
-        if (node.kind === 'bush') {
-          this.bushRegrow.set(node.id, performance.now() + 90_000);
-        }
+      this.mp!.sendHarvest(node.id, bonus);
+      return;
+    }
+
+    // systems/harvest.ts decides the roll, the tool bonus, the bag capacity
+    // and the XP in one tested place. The old inline code threw away the
+    // return value of `Inventory.add()` — which IS the number of units that
+    // did not fit — so in a full bag resources silently vanished while the
+    // node was still damaged and the XP still paid out.
+    const outcome = resolveHarvest({ kind: node.kind, inventory: this.inventory, toolId: tool });
+    if (outcome.status === 'unknown') {
+      this.gathering = null;
+      this.hud.setProgress(null);
+      return;
+    }
+    if (outcome.status === 'blocked') {
+      // Not even one unit fits: the swing never finishes, so no node hp and
+      // no XP is wasted. Progress sticks at 100 % and the harvest completes
+      // the instant the player frees space (drop/place something).
+      g.progress = 1;
+      this.hud.setProgress(1);
+      if (this.harvestBlockedNotified !== node.id) {
+        this.harvestBlockedNotified = node.id;
+        const name = outcome.itemId ? (ITEMS[outcome.itemId]?.name ?? outcome.itemId) : 'de opbrengst';
+        this.hud.toast(`Rugzak vol — maak ruimte voor ${name}`);
+      }
+      return;
+    }
+    this.harvestBlockedNotified = null;
+    this.gathering = null;
+    this.hud.setProgress(null);
+    const line = harvestToast(outcome);
+    if (line) this.hud.toast(line);
+    // Progression: gathering pays XP per node kind, scaled to what actually
+    // reached the bag. Quest goals count the same REAL amount that entered
+    // the bag (granted), never the rolled amount.
+    this.grantXp(outcome.xp);
+    if (outcome.itemId && outcome.granted > 0) {
+      this.settleQuests(
+        this.quests.progress({ type: 'gather', target: outcome.itemId, count: outcome.granted }),
+      );
+    }
+    const remaining = this.world.damageNode(node.id, 1);
+    if (remaining <= 0) {
+      this.floraRefresh();
+      if (node.kind === 'bush') {
+        this.bushRegrow.set(node.id, performance.now() + 90_000);
       }
     }
   }
@@ -967,7 +1996,7 @@ export class Game {
     if (!s) return;
     s.t += dt;
 
-    if (s.phase === 'fall' && this.input.consumePress('Escape')) {
+    if (s.phase === 'fall' && this.input.consumePress('close')) {
       this.sleep = null;
       this.hud.setSleepFade(0);
       this.hud.toast('Wederom wakker');
@@ -980,6 +2009,10 @@ export class Game {
       if (s.t >= Game.SLEEP_LIE_S) {
         // The screen is fully dark: jump the clock and apply the rest.
         this.lighting.setTimeOfDay(s.result.wakeTime);
+        // Tell the server: sleeping moves the WORLD's clock, not just yours,
+        // so everyone else in this world wakes up too (and cannot be left
+        // standing in a night that only existed on their own screen).
+        if (this.mpConnected) this.mp!.sendSleep();
         this.stats.applyRest(s.result);
         // Progression: surviving a full night pays XP (fatal rests don't).
         if (!s.result.died) this.grantXp(XP_SOURCE.sleep);
@@ -1029,6 +2062,12 @@ export class Game {
   private respawn(): void {
     this.sleep = null;
     this.cook = null;
+    // Potions do not survive death, and a fresh corpse gets a short
+    // immunity window (validIncomingHit gates on lastHitTakenAt).
+    this.swiftT = 0;
+    this.nightT = 0;
+    this.lastHitTakenAt = this.combatT;
+    if (this.shopOpen) this.setShopOpen(false);
     this.hud.setProgress(null);
     this.hud.setSleepFade(0);
     this.stats.respawn();
@@ -1048,10 +2087,28 @@ export class Game {
 
   private frame(rawDt: number): void {
     const dt = Math.min(rawDt, 0.05);
+    /**
+     * Presentation clock. The simulation above runs on a 50 ms clamp so a
+     * stutter cannot teleport the player, but that clamp also means a slow
+     * machine plays the world in slow motion — and the things a PLAYER judges
+     * by eye (how fast the zoom follows the wheel, how long a chip stays up)
+     * must not inherit it, or a 4 fps laptop would take ten seconds to reach
+     * first person. Capped at 250 ms so a tab that was in the background
+     * cannot make the camera jump the whole way in one frame.
+     */
+    const viewDt = Math.min(rawDt, 0.25);
     this.lighting.update(dt);
     this.water.update(dt);
     this.atmosphere.update(dt, this.lighting.dayFactor);
     this.postfx.update(dt);
+
+    // Shared clock. The server owns the day/night cycle now (see
+    // server/clock.mjs): we run the clock ourselves between the 2 s updates
+    // and ease towards the server value, so two players in one world always
+    // see the same sky — instead of each running their own private sun.
+    if (this.worldClock.synced && !this.sleep) {
+      this.lighting.setTimeOfDay(this.worldClock.follow(this.lighting.timeOfDay, dt));
+    }
 
     const dead = this.stats.dead;
 
@@ -1072,13 +2129,74 @@ export class Game {
       }
     }
 
-    // Mouse look
+    // Planters: the owner's crops grow while the owner is nearby, and the
+    // toast announces the moment a tray turns ripe (see systems/farm.ts).
+    for (const b of this.world.buildings) {
+      if (!isPlanter(b)) continue;
+      const before = growthOf(b);
+      const after = growPlanter(b, dt, this.localId, this.controller.pos);
+      if (before < PLANTER_SECONDS && after >= PLANTER_SECONDS && !this.planterRipe.has(b.id)) {
+        this.planterRipe.add(b.id);
+        this.hud.toast(`De bessen in je bloempot zijn rijp — E om te plukken`);
+      }
+      if (after < PLANTER_SECONDS) this.planterRipe.delete(b.id);
+    }
+
+    // Mouse look. The delta goes to whichever view is being rendered (see
+    // pitchOwner), because the two views keep separate look angles — and each
+    // view integrates its OWN deltas. Reading the other view's angle as a base
+    // would copy the shoulder-cam's 37° down-angle into the first-person one on
+    // any frame without movement, which is exactly what the first build did.
     if (this.input.pointerLocked && !dead) {
       const m = this.input.consumeMouseDelta();
-      this.camYaw += m.x * 0.0022;
-      this.camPitch = Math.max(-1.15, Math.min(1.25, this.camPitch - m.y * 0.0022));
+      const dy = m.y * BASE_MOUSE_LOOK * this.mouseSens;
+      this.camYaw += m.x * BASE_MOUSE_LOOK * this.mouseSens;
+      if (pitchOwner(this.camDist) === 'first') {
+        this.camPitchFirst = clampCameraPitch(this.camPitchFirst - dy);
+      } else {
+        this.camPitch = clampCameraPitch(this.camPitch - dy);
+      }
     } else {
       this.input.consumeMouseDelta();
+    }
+
+    // Scrollwheel: zoom the camera, all the way into first person and back out.
+    // Read every frame, also while dead or unlocked: a wheel gesture must never
+    // end up scrolling the page instead (input.ts preventDefaults it either
+    // way), and "dead but still zooming" is cheaper than a special case.
+    const wheel = this.input.consumeWheelZoom();
+    if (wheel !== 0) {
+      this.camDistTarget = zoomDistance(this.camDistTarget, wheel);
+      // A zoom is a deliberate gesture: say which view it produced.
+      this.camPillT = 1.6;
+      this.hud.setCameraView(isFirstPerson(this.camDistTarget), true);
+      // …and remember it for the next session — but only once the gesture
+      // burst is over. A trackpad delivers dozens of wheel events per second,
+      // and localStorage is synchronous: writing per event would stall frames.
+      this.camSaveT = 0.7;
+    }
+    if (this.camSaveT > 0) {
+      this.camSaveT = Math.max(0, this.camSaveT - viewDt);
+      if (this.camSaveT === 0) this.saveControls();
+    }
+    if (this.camPillT > 0) {
+      this.camPillT = Math.max(0, this.camPillT - viewDt);
+      if (this.camPillT === 0) this.hud.setCameraView(isFirstPerson(this.camDistTarget), false);
+    }
+    this.camDist = smoothCamDist(this.camDist, this.camDistTarget, viewDt);
+
+    // Right mouse button: give the mouse BACK to the browser, so the cursor
+    // can reach the HUD buttons (hotbar slots, panel close crosses). Left
+    // click on the world takes it again (input.ts onClick). Asymmetric on
+    // purpose: if RMB also re-grabbed, a stray right-click during an inventory
+    // click would throw the cursor away mid-click.
+    if (this.input.consumeInterfacePress('Mouse2')) this.input.releasePointer();
+    // The lock can also end without us: Esc, alt-tab, clicking another window.
+    // The HUD chip must follow the REAL state, not the state we requested.
+    const pointerFree = !this.input.pointerLocked;
+    if (pointerFree !== this.pointerShown) {
+      this.pointerShown = pointerFree;
+      this.hud.setPointerReleased(pointerFree);
     }
 
     if (!dead) {
@@ -1092,16 +2210,29 @@ export class Game {
       // so a cancelled or dead-interrupted craft loses nothing.
       if (this.craft) {
         const result = this.craft.tick(this.inventory, dt);
-        if (result === 'crafting') {
+        if (result === 'crafting' || result === 'blocked') {
           this.hud.setProgress(this.craft.progress);
+          if (result === 'blocked' && !this.craftBlockedNotified) {
+            this.craftBlockedNotified = true;
+            const out = this.craft.recipe.output.id;
+            this.hud.toast(`Rugzak vol — maak ruimte voor ${ITEMS[out]?.name ?? out}`);
+          }
         } else {
           const recipe = this.craft.recipe;
           this.craft = null;
+          this.craftBlockedNotified = false;
           this.hud.setProgress(null);
           if (result === 'done') {
             this.hud.toast(`Gemaakt: ${ITEMS[recipe.output.id].name} x${recipe.output.count}`);
             // Progression: a completed craft pays XP.
             this.grantXp(XP_SOURCE.craft);
+            this.settleQuests(
+              this.quests.progress({
+                type: 'craft',
+                target: recipe.output.id,
+                count: recipe.output.count,
+              }),
+            );
           }
           this.refreshHud(true);
         }
@@ -1114,15 +2245,25 @@ export class Game {
       if (this.cook) {
         const fire = this.world.buildings.find((x) => x.id === this.cook!.fireId);
         const result = this.cook.tick(this.inventory, fire?.fuel, dt);
-        if (result === 'cooking') {
+        if (result === 'cooking' || result === 'blocked') {
           this.hud.setProgress(this.cook.progress);
+          if (result === 'blocked' && !this.cookBlockedNotified) {
+            this.cookBlockedNotified = true;
+            const out = this.cook.outputId;
+            this.hud.toast(`Rugzak vol — maak ruimte voor ${ITEMS[out]?.name ?? out}`);
+          }
         } else {
+          // Grab the cooked output id BEFORE the session is cleared: the
+          // 'Gekookt' toast below (and cook quest goals) need it.
+          const cookedOut = this.cook.outputId;
           this.cook = null;
+          this.cookBlockedNotified = false;
           this.hud.setProgress(null);
           if (result === 'done') {
             this.hud.toast('Gekookt');
             // Progression: a completed cook pays XP.
             this.grantXp(XP_SOURCE.cook);
+            this.settleQuests(this.quests.progress({ type: 'cook', target: cookedOut, count: 1 }));
           } else {
             this.hud.toast('Het vuur is gedoofd — koken afgebroken');
           }
@@ -1131,18 +2272,33 @@ export class Game {
       }
 
       // Player physics (movement locked while crafting — standing still).
+      // Walls block the player horizontally within their own height band;
+      // floors and roofs are the horizontal surfaces to stand on. Both come
+      // straight from world state, so a friend's house is solid here too.
       const walls: WallSegment[] = this.world.buildings
-        .filter((b) => b.kind === 'wall')
+        .filter((b) => isBlocking(b.kind, !!b.open))
         .map(wallSegment);
+      const platforms: Platform[] = this.world.buildings.flatMap(buildingPlatforms);
       this.controller.crouching = this.input.crouch;
-      this.controller.update(dt, this.input, this.camYaw, this.colliders, this.stats.canSprint(), walls, !(this.craft || this.cook));
+      this.controller.update(
+        dt,
+        this.input,
+        this.camYaw,
+        this.colliders,
+        this.stats.canSprint(),
+        walls,
+        platforms,
+        !(this.craft || this.cook),
+      );
 
       // Fall impact: the controller reports each solid landing after a
       // genuine airborne fall (water landings are absorbed, no event).
       // Fall damage is local per player; no MP protocol change needed.
       const impact = this.controller.consumeImpact();
       if (impact) {
-        const fall = computeFallDamage(impact.distance, impact.crouching);
+        const raw = computeFallDamage(impact.distance, impact.crouching);
+        // A raised shield eats half of a hard landing (and pays wear for it).
+        const fall = this.absorb(raw);
         if (fall > 0) {
           this.stats.takeDamage(fall);
           this.hurtT = 1;
@@ -1197,6 +2353,19 @@ export class Game {
       }
       if (!this.stats.exhausted) this.wasExhausted = false;
 
+      // Combat + potion buff timers. combatT only runs while ALIVE (this
+      // whole block is skipped on death), so a corpse can neither swing
+      // nor be re-hit.
+      this.combatT += dt;
+      if (this.swiftT > 0) this.swiftT = Math.max(0, this.swiftT - dt);
+      if (this.nightT > 0) this.nightT = Math.max(0, this.nightT - dt);
+      if (this.swingT > 0) this.swingT = Math.max(0, this.swingT - dt);
+      this.controller.speedScale = this.swiftT > 0 ? SWIFT_SPEED_MULTIPLIER : 1;
+      if (this.nightLight) {
+        this.nightLight.intensity =
+          this.nightT > 0 ? Math.min(1, Math.min(this.nightT, 2) / 2) * 1.2 : 0;
+      }
+
       // Damage vignette: hold a low glow while deprivation (starve /
       // dehydrate / freeze / heat) is ticking, spike to full on impact,
       // and decay every frame so the overlay always settles to invisible.
@@ -1214,10 +2383,13 @@ export class Game {
       else this.updatePrompt(pick);
 
       // One-press actions. While a timed craft or cook is running the
-      // player stands still and works: only B (cancel) and Esc (cancel)
-      // are honoured, everything else is ignored.
-      if (this.craft || this.cook) {
-        if (this.input.consumePress('KeyB') || this.input.consumePress('Escape')) {
+      // player stands still and works: only the cancel key and Esc are
+      // honoured, everything else is ignored. While a REBIND is open the
+      // presses are discarded outright: the captured key must not also act.
+      if (this.rebinding) {
+        this.input.clearPresses();
+      } else if (this.craft || this.cook) {
+        if (this.input.consumePress('craft') || this.input.consumePress('close')) {
           if (this.craft) this.cancelCraft('Afgebroken');
           else this.cancelCook('Afgebroken');
           this.craftingOpen = false;
@@ -1226,34 +2398,49 @@ export class Game {
       } else {
         // E/R mutate the inventory (add wood, drink, eat) — while the panel
         // is open the player is managing items blind (no prompt shown), so
-        // those are ignored; I/Esc still close it. B also stays closed while
-        // the panel is open (one Esc should always close exactly one layer).
-        if (!this.invOpen && this.input.consumePress('KeyE')) this.handleEPress(pick?.target ?? null);
-        if (!this.invOpen && this.input.consumePress('KeyB')) {
+        // those are ignored; the bag key and the close key still work. B also
+        // stays closed while the panel is open (one Esc closes one layer).
+        if (!this.invOpen && this.input.consumePress('interact')) this.handleEPress(pick?.target ?? null);
+        if (!this.invOpen && this.input.consumePress('craft')) {
           this.craftingOpen = !this.craftingOpen;
           this.refreshHud(true);
         }
-        if (this.input.consumePress('KeyQ')) {
-          // While the inventory is open, Q drops from the UI cursor.
+        if (this.input.consumePress('drop')) {
+          // While the inventory is open, drop works from the UI cursor.
           if (this.invOpen && this.invCursor) this.dropFromCursor();
           else if (!this.invOpen) this.dropSelected();
         }
-        if (this.input.consumePress('KeyI') || (this.invOpen && this.input.consumePress('Escape'))) {
+        if (this.input.consumePress('inventory') || (this.invOpen && this.input.consumePress('close'))) {
           this.toggleInventory();
         }
-        if (!this.invOpen && this.input.consumePress('KeyR')) this.tryConsume();
-        if (this.input.consumePress('KeyN')) {
-          if (window.confirm('Nieuwe wereld starten? Huidige voortgang wordt gewist.')) {
-            Save.clear();
-            window.location.reload();
-          }
+        if (!this.invOpen && this.input.consumePress('consume')) this.tryConsume();
+        // The attack key swings the selected weapon: a sword punches what the
+        // crosshair rests on, a Jachtboog shoots it (up to BOW_RANGE). Remote
+        // players are only ever hit by a melee swing — see tryMeleeAttack.
+        if (!this.invOpen && this.input.consumePress('attack')) {
+          if (this.selectedItemId() === 'bow') this.tryShoot(pick?.target ?? null);
+          else this.tryMeleeAttack(pick?.target ?? null);
         }
-        for (let i = 1; i <= 8; i++) {
-          if (this.input.consumePress(`Digit${i}`)) {
-            this.inventory.select(i - 1);
-            this.refreshHud(true);
-          }
+        // Settings panel: holds the controls, the mouse sensitivity and the
+        // world reset behind a two-click confirm. Deliberately not tied to
+        // Ctrl+R: browsers hard-reload on that, and a lost save was one
+        // keystroke away.
+        if (this.input.consumePress('settings')) {
+          this.setSettingsOpen(!this.settingsOpen);
         }
+        if (this.settingsOpen && this.input.consumePress('close')) {
+          this.setSettingsOpen(false);
+        }
+        // Hotbar: the eight slot keys are one group (rebindable per slot).
+        const slot = this.input.consumeSlotPress();
+        if (slot >= 0) {
+          this.inventory.select(slot);
+          this.refreshHud(true);
+        }
+        // Build height: lifts the next placement one grid step (0.3 m) at a
+        // time, so floors can be levelled on uneven terrain.
+        if (this.input.consumePress('buildUp')) this.adjustBuildLevel(1);
+        if (this.input.consumePress('buildDown')) this.adjustBuildLevel(-1);
       }
 
       // Throttled HUD + autosave
@@ -1298,8 +2485,10 @@ export class Game {
     // ~130 u shadow frustum are registered as casters (O(chunks) diff).
     this.syncFloraShadowCasters(this.camera.position.x, this.camera.position.z);
     this.updateNpcs(dt);
+    this.updateAnimals(dt);
+    this.witchTick?.(dt, this.combatT);
     this.updateRemotes(dt);
-    this.updateFps(dt);
+    this.updateFps(rawDt);
     this.syncBuildingShadows();
 
     // Multiplayer position relay
@@ -1310,6 +2499,9 @@ export class Game {
         this.controller.pos.z,
         this.charYaw,
       );
+      // Progress relay needs no extra timer: the 15 s autosave tick calls
+      // persist(), which uploads a snapshot here instead of writing
+      // localStorage (see persist()), and does the same on unload.
     }
   }
 
@@ -1319,28 +2511,14 @@ export class Game {
       this.renderer.clearPreview();
       return;
     }
-    const ground = this.groundUnderCamera(14);
-    if (!ground) {
+    const kind = sel as BuildingData['kind'];
+    const spot = this.placementFor(kind);
+    if (!spot) {
       this.renderer.clearPreview();
       return;
     }
-    const dx = ground.x - this.controller.pos.x;
-    const dz = ground.z - this.controller.pos.z;
-    const rot = ((Math.round(Math.atan2(dx, dz) / (Math.PI / 2)) % 4) + 4) % 4;
-    const centerY = groundHeight(ground.x, ground.z);
-    const groundY = buildingPlacementHeight(sel as BuildingData['kind'], ground.x, ground.z, rot, groundHeight);
-    const valid = validatePlacement(
-      sel as BuildingData['kind'],
-      ground.x,
-      ground.z,
-      centerY,
-      this.world.buildings,
-      this.controller.pos,
-      groundHeight,
-      SEA_LEVEL,
-    ) === null && groundY >= SEA_LEVEL;
-    this.renderer.setPreviewValid(valid);
-    this.renderer.preview(sel as BuildingData['kind'], ground.x, ground.z, groundY, rot);
+    this.renderer.setPreviewValid(spot.error === null);
+    this.renderer.preview(kind, spot.x, spot.z, spot.baseY, spot.rot);
   }
 
   private updatePrompt(pick: { target: InteractTarget; distance: number } | null): void {
@@ -1402,12 +2580,45 @@ export class Game {
         case 'bed':
           text = "Druk E — Slapen tot 's ochtends";
           break;
+        case 'door': {
+          const b = this.world.buildings.find((x) => x.id === t.id);
+          text = b?.open ? 'Druk E — Deur sluiten' : 'Druk E — Deur openen';
+          break;
+        }
+        case 'planter': {
+          const b = this.world.buildings.find((x) => x.id === t.id);
+          if (b) {
+            text = isRipe(b)
+              ? `Druk E — Rijpe bessen plukken (${PLANTER_YIELD})`
+              : `Bessen in de bloempot groeien (${Math.round(planterFraction(b) * 100)}%)`;
+          }
+          break;
+        }
+        case 'workbench':
+          text = this.craftingOpen
+            ? 'Tekentafel — menu is open (B/Esc sluit)'
+            : 'Druk E — Aan de tekentafel alles maken';
+          break;
+        case 'animal': {
+          const a = this.animals.find((x) => x.id === t.id);
+          text = a
+            ? `Houd F — ${ANIMALS[a.kind].name} jagen (vlees${a.kind === 'sheep' ? ' + wol' : ' + leder'})`
+            : null;
+          break;
+        }
+        case 'witch':
+          text = 'Druk E — Ruilen met de heks (drankjes)';
+          break;
+        case 'player':
+          text = 'LMB — Aanvallen';
+          break;
       }
     }
-    // Fallback hint: a consumable in the selected slot can always be used.
+    // Fallback hint: a building item in the selected slot explains the grid.
     if (text === null) {
       const sel = this.selectedItemId();
       if (isConsumable(sel)) text = `Druk R — ${ITEMS[sel].name} eten`;
+      else if (sel && BUILDING_KINDS.has(sel)) text = 'Druk E — Plaatsen op het bouwraster · PgUp/PgDn — hoogte (muren op vloer-randen)';
     }
     this.hud.setPrompt(text);
   }
@@ -1419,6 +2630,17 @@ export class Game {
     const result = consumeItem(itemId, this.inventory, this.stats);
     if (result.ok) {
       this.eatT = 0.7;
+      // The witch's timed buffs (systems/shop.ts POTION_BUFF_SECONDS).
+      const buff = POTION_BUFF_SECONDS[itemId];
+      if (buff) {
+        if (itemId === 'potion_swift') {
+          this.swiftT = buff;
+          this.hud.toast('Drankje werkt — je bent sneller dan de wind (90s)');
+        } else if (itemId === 'potion_night') {
+          this.nightT = buff;
+          this.hud.toast('Drankje werkt — het donker kan je nu niets schelen (120s)');
+        }
+      }
       this.hud.toast(result.message);
       this.refreshHud(true);
     } else {
@@ -1455,41 +2677,95 @@ export class Game {
     this.refreshHud(true);
   }
 
+  /**
+   * The rig for this frame. Kept separate from the frame loop so the rules the
+   * zoom introduced (sleep, caves, the body mesh) each have one obvious home
+   * instead of five conditions spread over the math.
+   */
   private updateCamera(): void {
+    if (this.nightLight) {
+      // Night-sight aura rides the camera (intensity gated in update()).
+      this.nightLight.position.copyFrom(this.camera.position);
+      this.nightLight.position.y += 0.5;
+    }
     const target = this.sleep
       ? new Vector3(this.sleep.bed.x, this.sleep.bed.y + 0.9, this.sleep.bed.z)
       : new Vector3(
           this.controller.pos.x,
-          this.controller.pos.y + (this.controller.crouching ? 0.8 : 1.0),
+          this.controller.pos.y + pivotHeight(this.controller.crouching, this.renderDist()),
           this.controller.pos.z,
         );
-    const dist = 5.5;
-    const cp = Math.cos(this.camPitch);
-    const dir = new Vector3(Math.sin(this.camYaw) * cp, Math.sin(this.camPitch), Math.cos(this.camYaw) * cp);
+    const dist = this.renderDist();
+    // Each view has its own pitch; the zoom blends between them (cameraRig).
+    const pitch = blendPitch(this.camPitch, this.camPitchFirst, dist);
+    const cp = Math.cos(pitch);
+    const dir = new Vector3(Math.sin(this.camYaw) * cp, Math.sin(pitch), Math.cos(this.camYaw) * cp);
 
     // Terrain occlusion: cast the look ray from the player TOWARD the camera
     // against the rendered mesh. When a hill sits between them, pull the
     // camera in to just in front of the surface so the player never looks
     // through terrain (a plain min-height clamp at the camera position can
     // still let the sightline dip under a slope).
+    //
+    // Skipped in first person: there is nothing between the eyes and the
+    // world, and the pull-in exists only to keep the CHARACTER on screen —
+    // running it here would shove the camera out of the player's own head.
     let effDist = dist;
-    const hit = terrainRayHit(target.x, target.y, target.z, -dir.x, -dir.y, -dir.z, dist);
-    if (hit && hit.t < dist) {
-      effDist = Math.max(CAMERA_MIN_DIST, hit.t - CAMERA_SURFACE_OFFSET);
+    const fp = isFirstPerson(dist);
+    if (!fp) {
+      const hit = terrainRayHit(target.x, target.y, target.z, -dir.x, -dir.y, -dir.z, dist);
+      if (hit && hit.t < dist) {
+        effDist = Math.max(occlusionFloor(dist), hit.t - CAMERA_SURFACE_OFFSET);
+      }
     }
 
     let px = target.x - dir.x * effDist;
     let py = target.y - dir.y * effDist;
     let pz = target.z - dir.z * effDist;
+    // At full zoom the eye point IS the camera; five centimetres of backlash
+    // keeps it from coinciding with its own target (see eyeBacklash).
+    if (fp) {
+      const back = eyeBacklash(effDist);
+      px = target.x - dir.x * back;
+      py = target.y - dir.y * back;
+      pz = target.z - dir.z * back;
+    }
 
     // Final safety net: keep the camera above the RENDERED mesh height
     // (triangulated), not the analytic curve, so it never dips under the
     // ground the player can see.
-    const minY = Math.max(groundHeight(px, pz) + 0.5, SEA_LEVEL + 0.25);
-    if (py < minY) py = minY;
+    //
+    // Not applied in first person. There the eye height is not a guess to be
+    // corrected — it is the physics body, which already stands on whatever
+    // surface is really there, including a cave floor BELOW the terrain curve.
+    // Clamping to the terrain there would lift the player out of the cave and
+    // straight up through the hillside.
+    if (!fp) {
+      const minY = Math.max(groundHeight(px, pz) + 0.5, SEA_LEVEL + 0.25);
+      if (py < minY) py = minY;
+    }
 
     this.camera.position.set(px, py, pz);
     this.camera.setTarget(target);
+
+    // The character mesh must disappear before the camera reaches the head;
+    // the hysteresis lives in cameraRig so the zoom cannot strobe it.
+    const showBody = this.sleep ? true : bodyVisible(dist, this.bodyShown);
+    if (showBody !== this.bodyShown) {
+      this.bodyShown = showBody;
+      this.character.root.setEnabled(showBody);
+    }
+  }
+
+  /**
+   * The distance to render this frame. Sleeping always pulls back to the
+   * shipped shoulder-cam: the sleep animation is something the player watches
+   * FROM OUTSIDE, and a first-person close-up of the inside of a bedroll is
+   * not the intent of pressing E on a bed. The saved zoom is untouched, so
+   * waking up returns to exactly the view the player zoomed to.
+   */
+  private renderDist(): number {
+    return this.sleep ? CAM_DIST_DEFAULT : this.camDist;
   }
 
   /** Keep the shadow generator in sync with placed/displaced buildings. */
@@ -1514,22 +2790,299 @@ export class Game {
     }
   }
 
-  private updateRemotes(dt: number): void {
-    for (const r of this.remotes.values()) {
-      r.mesh.position.x += (r.target.x - r.mesh.position.x) * Math.min(1, 10 * dt);
-      r.mesh.position.y += (r.target.y - r.mesh.position.y) * Math.min(1, 10 * dt);
-      r.mesh.position.z += (r.target.z - r.mesh.position.z) * Math.min(1, 10 * dt);
+  /**
+   * Place the herd: 4 sheep + 3 cows on dry ground in a ring around the
+   * camp, deterministic from WORLD_SEED (same world, same herd spots). A
+   * spot over the sea line or crowding the villagers is re-drawn.
+   */
+  private spawnFauna(): void {
+    const rng = mulberry32((WORLD_SEED ^ 0x5eed17) >>> 0);
+    const roster: AnimalKind[] = ['sheep', 'sheep', 'sheep', 'sheep', 'cow', 'cow', 'cow'];
+    for (const kind of roster) {
+      for (let tries = 0; tries < 32; tries++) {
+        const spot = herdSpot(this.camp, rng, 16, 46);
+        if (groundSurfaceHeight(spot.x, spot.z) < SEA_LEVEL + 0.5) continue;
+        const a = new Animal(
+          this.scene,
+          `an_${++this.animalSeq}`,
+          kind,
+          spot.x,
+          spot.z,
+          (WORLD_SEED + this.animalSeq * 7919) >>> 0,
+          this.mats,
+        );
+        for (const m of a.shadowMeshes) this.lighting.addShadowCaster(m);
+        this.animals.push(a);
+        break;
+      }
     }
   }
 
-  private updateFps(dt: number): void {
-    this.fpsFrames++;
-    this.fpsTime += dt;
-    if (this.fpsTime >= 1) {
-      this.hud.setFps(Math.round(this.fpsFrames / this.fpsTime));
-      this.fpsFrames = 0;
-      this.fpsTime = 0;
+  private updateAnimals(dt: number): void {
+    // The herd freezes during conversations, death and sleep — the same
+    // courtesy the villagers get, and no animal can be hunted mid-cutscene.
+    const frozen = this.activeNpc !== null || !!this.sleep || this.stats.dead;
+    const p = this.controller.pos;
+    for (const a of this.animals) a.update(dt, p.x, p.z, frozen);
+    // Remove animals whose collapse animation finished.
+    for (let i = this.animals.length - 1; i >= 0; i--) {
+      const a = this.animals[i];
+      if (a.gone) {
+        for (const m of a.shadowMeshes) this.lighting.removeShadowCaster(m);
+        a.dispose();
+        this.animals.splice(i, 1);
+      }
     }
+  }
+
+  /**
+   * Hold-F hunting, the animal twin of updateGathering: one landed hit per
+   * `hitSeconds`, a hit animal flees, a dead one drops its loot table.
+   * A killing blow only lands while the bag can still receive the main
+   * item (same no-silent-loss rule as harvesting).
+   */
+  private updateHunting(dt: number, target: { kind: 'animal'; id: string }): void {
+    const animal = this.animals.find((a) => a.id === target.id && a.alive);
+    if (!animal) {
+      this.hunting = null;
+      this.hud.setProgress(null);
+      return;
+    }
+    const g =
+      this.hunting && this.hunting.id === animal.id
+        ? this.hunting
+        : (this.hunting = { id: animal.id, progress: 0 });
+    g.progress += dt / ANIMALS[animal.kind].hitSeconds;
+    this.hud.setProgress(Math.min(1, g.progress));
+    if (g.progress < 1) return;
+
+    const def = ANIMALS[animal.kind];
+    const mainDrop = def.drops[0].itemId;
+    if (!this.inventory.canAdd(mainDrop, 1)) {
+      g.progress = 1;
+      this.hud.setProgress(1);
+      if (this.animalBlockedNotified !== animal.id) {
+        this.animalBlockedNotified = animal.id;
+        this.hud.toast(`Rugzak vol — maak ruimte voor ${ITEMS[mainDrop].name}`);
+      }
+      return;
+    }
+    this.animalBlockedNotified = null;
+    this.hunting = null;
+    this.hud.setProgress(null);
+
+    const died = animal.damage(this.controller.pos.x, this.controller.pos.z);
+    if (!died) {
+      this.hud.toast(`${def.name} slaat op de vlucht!`);
+      return;
+    }
+    this.finishAnimalKill(animal);
+  }
+
+  /**
+   * Loot + XP for a dead animal — shared by the F-harvest flow and sword
+   * kills. Everything drops; the inventory reports what did not fit and
+   * the toast says so honestly instead of pretending.
+   */
+  private finishAnimalKill(animal: Animal): void {
+    const def = ANIMALS[animal.kind];
+    const got: string[] = [];
+    let missed = 0;
+    for (const d of rollDrops(animal.kind, Math.random)) {
+      const left = this.inventory.add(d.itemId, d.count);
+      const fit = d.count - left;
+      missed += left;
+      if (fit > 0) {
+        got.push(`${fit} ${ITEMS[d.itemId].name}`);
+        this.settleQuests(this.quests.progress({ type: 'gather', target: d.itemId, count: fit }));
+      }
+    }
+    this.hud.toast(
+      `Gestrikt: ${def.name.toLowerCase()} — ${got.join(', ') || 'niets meegekregen'}` +
+        (missed > 0 ? ` (${missed} past niet in de rugzak)` : ''),
+    );
+    this.grantXp(XP_SOURCE.kill);
+    this.refreshHud(true);
+  }
+
+  /**
+   * A sword (or fist) swing at the aimed target. Animals take weapon
+   * damage in whole hits; remote players get a `hit` message the server
+   * validates and the VICTIM applies to its own stats.
+   */
+  private tryMeleeAttack(target: InteractTarget | null): void {
+    if (!target) return;
+    if (!canSwing(this.combatT, this.lastSwingAt)) return;
+    const p = this.controller.pos;
+    if (!inSwingRange(Math.hypot(target.x - p.x, target.z - p.z))) return;
+    const sel = this.selectedItemId();
+    if (target.kind === 'animal') {
+      const dmg = animalMeleeDamage(sel);
+      if (dmg <= 0) return; // F remains the unarmed way to hunt
+      const animal = this.animals.find((a) => a.id === target.id && a.alive);
+      if (!animal) return;
+      this.lastSwingAt = this.combatT;
+      this.beginSwing();
+      let died = false;
+      for (let i = 0; i < dmg; i++) {
+        died = animal.damage(p.x, p.z);
+        if (died) break;
+      }
+      if (!died) {
+        this.hud.toast(`${ANIMALS[animal.kind].name} slaat op de vlucht!`);
+        return;
+      }
+      this.finishAnimalKill(animal);
+    } else if (target.kind === 'player') {
+      this.lastSwingAt = this.combatT;
+      this.beginSwing();
+      if (this.mpConnected) this.mp!.sendHit(target.id, playerMeleeDamage(sel));
+    }
+  }
+
+  /**
+   * An arrow from the Jachtboog at whatever the crosshair rests on, up to
+   * BOW_RANGE metres (systems/combat.ts). The shot is paid for twice: one
+   * arrow out of the quiver and one draw animation of bow wear, so ammo and
+   * durability limit hunting rather than a cooldown you can spam past.
+   *
+   * Animals only, deliberately: PvP damage is applied by the VICTIM after a
+   * server check that gates on melee reach (PVP_MAX_HIT_DISTANCE), so a ranged
+   * claim would be rejected by design. An arrow is still the honest answer to
+   * a herd you would rather not walk into.
+   */
+  private tryShoot(target: InteractTarget | null): void {
+    if (!canShoot(this.combatT, this.lastShotAt)) return;
+    const sel = this.selectedItemId();
+    const dmg = animalRangedDamage(sel);
+    if (dmg <= 0 || !target || target.kind !== 'animal') return;
+    const p = this.controller.pos;
+    if (!inBowRange(Math.hypot(target.x - p.x, target.z - p.z))) return;
+    const animal = this.animals.find((a) => a.id === target.id && a.alive);
+    if (!animal) return;
+    if (this.inventory.count(ARROW_AMMO) <= 0) {
+      this.hud.toast('Geen pijlen meer — maak nieuwe (B → Pijl)');
+      // Costing the draw anyway keeps that toast from repeating every frame.
+      this.lastShotAt = this.combatT;
+      return;
+    }
+
+    this.lastShotAt = this.combatT;
+    this.swingT = SHOOT_ANIM_TIME;
+    this.character.startSwing();
+    this.inventory.remove(ARROW_AMMO, 1);
+    const wear = wearTool(this.inventory, this.inventory.selected, SHOOT_ANIM_TIME);
+    if (wear.broke) this.hud.toast('Je boog is uit elkaar geklapt!');
+
+    let died = false;
+    for (let i = 0; i < dmg; i++) {
+      died = animal.damage(p.x, p.z);
+      if (died) break;
+    }
+    if (!died) {
+      this.hud.toast(`${ANIMALS[animal.kind].name} slaat op de vlucht!`);
+      return;
+    }
+    this.finishAnimalKill(animal);
+  }
+
+  /**
+   * Start the slash animation and pay the swing's tool wear (one swing
+   * animation of `wearPerSec` — the sword outlives ~200 strikes, then
+   * shatters like any other tool).
+   */
+  private beginSwing(): void {
+    this.swingT = SWING_ANIM_TIME;
+    this.character.startSwing();
+    const wear = wearTool(this.inventory, this.inventory.selected, SWING_ANIM_TIME);
+    if (wear.broke) this.hud.toast('Je zwaard is gebroken!');
+  }
+
+  /**
+   * Close a carved cave chamber (ceiling plug + crystals + light) for
+   * every site in world/caves.ts. The floor itself is terrain: the height
+   * field carving makes mesh, physics and flora agree automatically.
+   */
+  private buildCaves(): void {
+    for (const site of CAVE_SITES) {
+      this.decor.push(buildCaveInterior(this.scene, this.mats, site));
+    }
+  }
+
+  /**
+   * The witch's cottage: hut + figure on a scanned flat pad, facing the
+   * NPC camp so players walking over see the door and the cauldron.
+   */
+  private buildWitchSite(): void {
+    const gy = groundHeight(WITCH_HOME.x, WITCH_HOME.z);
+    const { root, decor } = buildWitchHut(this.scene, this.mats);
+    root.position.set(WITCH_HOME.x, gy - 0.12, WITCH_HOME.z);
+    root.rotation.y = Math.atan2(this.camp.x - WITCH_HOME.x, this.camp.z - WITCH_HOME.z);
+    this.decor.push(decor);
+
+    const witch = buildWitch(this.scene);
+    // Standing at the cauldron (local offset, rotated with the hut).
+    const cos = Math.cos(root.rotation.y);
+    const sin = Math.sin(root.rotation.y);
+    const lx = 3.1;
+    const lz = 3.9;
+    witch.root.position.set(
+      WITCH_HOME.x + lx * cos + lz * sin,
+      gy,
+      WITCH_HOME.z - lx * sin + lz * cos,
+    );
+    witch.root.rotation.y = root.rotation.y + Math.PI; // face her cauldron
+    this.witchRoot = witch.root;
+    this.witchTick = witch.update;
+    this.witchAt.set(witch.root.position.x, gy + 1.1, witch.root.position.z);
+  }
+
+  /** Open/close the witch's barter panel (releases the pointer lock). */
+  private setShopOpen(open: boolean): void {
+    this.shopOpen = open;
+    this.hud.setShop(open, this.shopRows());
+    if (open) {
+      try {
+        document.exitPointerLock?.();
+      } catch {
+        /* not locked, nothing to release */
+      }
+    }
+  }
+
+  private shopRows(): Array<{ id: string; name: string; price: string; afford: boolean }> {
+    return SHOP_OFFERS.map((o) => ({
+      id: o.id,
+      name: ITEMS[o.gives].name,
+      price: priceLabel(o, (id) => (ITEMS[id]?.name ?? id).toLowerCase()),
+      afford: offerAffordable(this.inventory, o),
+    }));
+  }
+
+  private doTrade(offerId: string): void {
+    const offer = SHOP_OFFERS.find((o) => o.id === offerId);
+    if (!offer) return;
+    if (performTrade(this.inventory, offer)) {
+      this.hud.toast(`Geruild: ${ITEMS[offer.gives].name}`);
+      this.hud.setShop(true, this.shopRows());
+      this.refreshHud(true);
+    } else {
+      this.hud.toast('Ruild niet — te weinig materiaal of te volle rugzak');
+    }
+  }
+
+  private updateRemotes(dt: number): void {
+    this.avatars.update(dt);
+    this.avatars.project(this.camera);
+  }
+
+  /**
+   * FPS display. Deliberately fed the RAW frame time (see frame()): the
+   * simulation clamps dt to 50 ms, and averaging that clamped value made
+   * the HUD report ~20 fps even when the engine rendered at 1 fps.
+   */
+  private updateFps(rawDt: number): void {
+    if (this.fpsMeter.tick(rawDt)) this.hud.setFps(this.fpsMeter.fps);
   }
 
   private refreshHud(force: boolean): void {
@@ -1543,18 +3096,43 @@ export class Game {
       this.inventory.selected,
       this.invCursor,
     );
-    const can = new Set(RECIPES.filter((r) => Crafting.canCraft(this.inventory, r, this.progress.level)).map((r) => r.id));
-    this.hud.setCrafting(this.craftingOpen, can, this.craft ? this.craft.recipe.id : null, this.progress.level);
+    const atTable = this.atWorkbench();
+    const can = new Set(
+      RECIPES.filter((r) => Crafting.canCraft(this.inventory, r, this.progress.level, atTable)).map((r) => r.id),
+    );
+    this.hud.setCrafting(
+      this.craftingOpen,
+      can,
+      this.craft ? this.craft.recipe.id : null,
+      this.progress.level,
+      atTable,
+    );
+    // Keep the witch's affordability columns honest while her panel is open
+    // (the player could trade from the hotbar side, or consume materials).
+    if (this.shopOpen) this.hud.setShop(true, this.shopRows());
   }
 
   dispose(): void {
-    window.removeEventListener('beforeunload', () => this.persist());
+    if (this.disposed) return;
+    this.disposed = true;
+    // Remove EVERY listener this game added, with the exact handler identity
+    // it was added with (the old code passed a fresh arrow function, so the
+    // unload hook — and all five hud-* hooks — stayed attached forever).
+    window.removeEventListener('beforeunload', this.persistOnUnload);
+    for (const { type, handler } of this.windowListeners) {
+      window.removeEventListener(type, handler);
+    }
+    this.windowListeners.length = 0;
+    if (this.chatTimer) {
+      clearTimeout(this.chatTimer);
+      this.chatTimer = null;
+    }
+    this.pendingChat = null;
     this.mp?.disconnect();
     this.input.detach();
     this.character.dispose();
     for (const npc of this.npcs) npc.dispose();
-    for (const r of this.remotes.values()) r.mesh.dispose();
-    this.atmosphere.dispose();
+    this.avatars.dispose();    this.atmosphere.dispose();
     this.postfx.dispose();
     this.disposeShaderDiagnostics();
     this.terrain.dispose();

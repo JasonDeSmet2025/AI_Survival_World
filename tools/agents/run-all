@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+PROJECT_ROOT="/root/AI_Survival_World"
+LOG_DIR="$PROJECT_ROOT/.pi/runtime/logs"
+RUN_ID="$(date +%Y%m%d-%H%M%S-%N)"
+
+cd "$PROJECT_ROOT"
+mkdir -p "$LOG_DIR"
+
+OVERALL_FAILED=0
+
+run_batch() {
+    local -a pids=()
+    local -a names=()
+
+    while (( $# >= 2 )); do
+        local agent="$1"
+        local task="$2"
+        shift 2
+
+        local log="$LOG_DIR/${RUN_ID}-${agent}.log"
+
+        echo "[$(date '+%H:%M:%S')] START $agent"
+        echo "Log: $log"
+
+        tools/agents/run "$agent" "$task" > "$log" 2>&1 &
+        pids+=("$!")
+        names+=("$agent")
+    done
+
+    local failed=0
+
+    for i in "${!pids[@]}"; do
+        if wait "${pids[$i]}"; then
+            echo "[$(date '+%H:%M:%S')] KLAAR ${names[$i]}"
+        else
+            echo "[$(date '+%H:%M:%S')] MISLUKT ${names[$i]} — zie log"
+            failed=1
+        fi
+    done
+
+    return "$failed"
+}
+
+echo "=========================================="
+echo " AI SURVIVAL WORLD — AGENT WACHTRIJ"
+echo " Run: $RUN_ID"
+echo " Maximaal 3 gelijktijdige agents"
+echo "=========================================="
+
+if ! run_batch \
+    gameplay "Corrigeer uitsluitend de waarschijnlijke 180-graden spelerrotatiebug in src/game/player.ts. Controleer de Babylon.js-coördinaten en de richting van de visor. Behoud alle bestaande gameplay. Voer npm run build uit. Wijzig geen andere gamebestanden. Geen commits." \
+    world "Optimaliseer uitsluitend src/game/flora.ts. Geef boomstammen unieke meshnamen en onderzoek gedeelde materialen om onnodige materiaalproliferatie te beperken. Behoud het huidige uiterlijk en gedrag. Voer npm run build uit. Wijzig geen andere gamebestanden. Geen commits." \
+    visual "Onderzoek en verbeter de laadstructuur van Babylon.js via code-splitting waar veilig mogelijk, met focus op src/main.ts en de Vite-configuratie. Controleer ook de bestaande terrainkleurcode in src/game/terrain.ts. Verander geen flora.ts of player.ts. Voer npm run build uit. Geen commits."
+then
+    OVERALL_FAILED=1
+fi
+
+echo
+echo "=========================================="
+echo " EERSTE GROEP AFGEROND — TWEEDE GROEP"
+echo "=========================================="
+
+if ! run_batch \
+    ai "Maak een technisch ontwerp in docs/AI_NPC_DESIGN.md voor Qwen 3.8 27B NPC-gesprekken, persoonlijkheden, context en persistent geheugen. Onderzoek de bestaande architectuur. Maak nog geen live AI-backend of externe afhankelijkheden. Geen wijzigingen aan bestaande gamecode. Geen commits." \
+    multiplayer "Maak een technisch ontwerp in docs/MULTIPLAYER_DESIGN.md voor een veilige client-serverarchitectuur, spelersynchronisatie, sessies en reconnectie. Baseer je op de bestaande architectuur. Implementeer nog geen multiplayer-server. Geen wijzigingen aan bestaande gamecode. Geen commits." \
+    qa "Voeg Vitest-testinfrastructuur en zinvolle unit tests toe voor bestaande zuivere functies. Onderzoek of strict TypeScript veilig geactiveerd kan worden; activeer strict alleen als je eventuele noodzakelijke typecorrecties verantwoord kunt uitvoeren. Beperk wijzigingen tot tsconfig, package-bestanden, tests en strikt noodzakelijke typecorrecties. Voer npm run build en npm test uit. Geen commits."
+then
+    OVERALL_FAILED=1
+fi
+
+echo
+echo "=========================================="
+
+if (( OVERALL_FAILED == 0 )); then
+    echo " ALLE AGENTGROEPEN SUCCESVOL AFGEROND"
+else
+    echo " WACHTRIJ AFGEROND — ER ZIJN MISLUKTE AGENTS"
+fi
+
+echo " Logs: $LOG_DIR"
+echo "=========================================="
+
+exit "$OVERALL_FAILED"

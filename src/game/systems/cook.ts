@@ -15,7 +15,7 @@ import { ITEMS } from '../core/items';
 import { isLit } from './campfire';
 import type { Inventory } from './inventory';
 
-export type CookTickResult = 'cooking' | 'done' | 'cancelled';
+export type CookTickResult = 'cooking' | 'blocked' | 'done' | 'cancelled';
 
 export const COOK = {
   /** Maximum distance (metres) from the fire at which cooking is possible. */
@@ -35,6 +35,17 @@ export function cookSeconds(itemId: string | null): number {
 /** The item id produced by cooking `itemId` (null when not cookable). */
 export function cookOutput(itemId: string | null): string | null {
   return itemId ? (ITEMS[itemId]?.cookable?.output ?? null) : null;
+}
+
+/**
+ * Whether the cooked result of `itemId` still fits in the bag. The raw
+ * unit that cooking consumes counts as free space (it is removed in the
+ * same step), so a nearly full bag is not blocked by its own ingredient.
+ */
+export function cookHasRoom(inv: Inventory, itemId: string | null): boolean {
+  const out = cookOutput(itemId);
+  if (!out || itemId == null) return false;
+  return inv.canAdd(out, 1, [{ id: itemId, count: 1 }]);
 }
 
 /**
@@ -58,6 +69,7 @@ export class CookSession {
   private elapsed = 0;
   private cancelled = false;
   private finished = false;
+  private blocked = false;
 
   private constructor(itemId: string, outputId: string, fireId: string) {
     this.itemId = itemId;
@@ -68,7 +80,8 @@ export class CookSession {
   /**
    * Start a cook session for the selected item next to a fire.
    * Returns null when the item is unknown/not cookable, the inventory
-   * holds none of it, or the fire is not lit.
+   * holds none of it, the fire is not lit, or the cooked result has
+   * nowhere to go (a cook that cannot fit would destroy the ingredient).
    */
   static start(
     itemId: string | null,
@@ -80,6 +93,7 @@ export class CookSession {
     const output = def.cookable as { output: string; seconds: number };
     if (inv.count(itemId) <= 0) return null;
     if (!isLit(fire.fuel)) return null;
+    if (!cookHasRoom(inv, itemId)) return null;
     return new CookSession(itemId, output.output, fire.id);
   }
 
@@ -100,11 +114,19 @@ export class CookSession {
     return this.cancelled || this.finished;
   }
 
+  /** True while a full bag holds the finished cook back (fire still lit). */
+  get isBlocked(): boolean {
+    return this.blocked;
+  }
+
   /**
    * Advance the session by `dt` seconds (negative dt is ignored).
    * `fuel` is the fire's CURRENT fuel: a fire that went out mid-cook
    * cancels the session (the raw item stays in the inventory).
    * - 'cooking': still cooking.
+   * - 'blocked': done but the cooked item does not fit; progress stays at
+   *   1, the raw item is kept and the session resumes as soon as the bag
+   *   has room again.
    * - 'done': the full duration elapsed next to a lit fire; the raw item
    *   was consumed and the cooked output added exactly once, even for a
    *   dt that overshoots the duration.
@@ -118,7 +140,18 @@ export class CookSession {
       return 'cancelled';
     }
     this.elapsed += Math.max(dt, 0);
-    if (this.elapsed < this.duration) return 'cooking';
+    if (this.elapsed < this.duration) {
+      this.blocked = false;
+      return 'cooking';
+    }
+    // Done cooking. The raw item may only be consumed when the cooked
+    // result fits, so a bag that filled up mid-cook pauses the cook
+    // instead of destroying food.
+    if (!cookHasRoom(inv, this.itemId)) {
+      this.elapsed = this.duration;
+      this.blocked = true;
+      return 'blocked';
+    }
     // Complete: consume the raw item exactly once, add the cooked output.
     inv.remove(this.itemId, 1);
     inv.add(this.outputId, 1);

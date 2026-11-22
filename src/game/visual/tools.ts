@@ -13,10 +13,17 @@ import type { SharedMaterials } from './materials';
  * Real multi-part models, not colored boxes: a shaped wooden handle with a
  * grip and butt (turned-cylinder silhouette), a chipped stone head, and a
  * wrapping band where the head meets the haft. Each tool is a TransformNode
- * whose origin sits at the hand position, with the tool extending toward +Y.
+ * whose origin sits at the centre of the fist that grips it, with the haft
+ * running from just below the fist (butt) up to the head at +Y.
+ *
+ * That pivot convention matters: the rig parents the tool to the right
+ * wrist, so geometry reaching far below the origin hangs out of the fist and
+ * leaves the head next to the knuckles — which reads as an upside-down tool
+ * buried in the arm. Keep heads/blades ABOVE the origin and only a short
+ * butt BELOW it.
  */
 
-export type ToolKind = 'stone_axe' | 'stone_pick';
+export type ToolKind = 'stone_axe' | 'stone_pick' | 'sword';
 
 const box = (
   scene: Scene,
@@ -48,20 +55,26 @@ const rod = (
   return m;
 };
 
-/** Wooden shaft: main grip + slightly thicker butt, subtle forward taper. */
+/**
+ * Wooden shaft running from y = 0 (butt, just below the fist) to y = length
+ * (top, where the head sits): main grip + slightly thicker butt.
+ */
 function makeHandle(scene: Scene, wood: PBRMaterial, length: number, thickness = 0.045): TransformNode {
   const root = new TransformNode('handle', scene);
-  const grip = rod(scene, 'handleGrip', thickness, length * 0.62, wood);
-  grip.position.y = -length * 0.31;
-  const mid = rod(scene, 'handleMid', thickness * 1.12, length * 0.4, wood);
-  mid.position.y = length * 0.02;
-  const butt = rod(scene, 'handleButt', thickness * 1.25, length * 0.1, wood);
-  butt.position.y = length * 0.22;
+  const butt = rod(scene, 'handleButt', thickness * 1.25, length * 0.14, wood);
+  butt.position.y = length * 0.07;
+  const grip = rod(scene, 'handleGrip', thickness, length * 0.5, wood);
+  grip.position.y = length * 0.39;
+  const mid = rod(scene, 'handleMid', thickness * 1.1, length * 0.36, wood);
+  mid.position.y = length * 0.82;
   grip.parent = root;
   mid.parent = root;
   butt.parent = root;
   return root;
 }
+
+/** How far above the butt the fist grips the haft (m). */
+const GRIP_FROM_BUTT = 0.09;
 
 /**
  * Stone axe: heavy chipped wedge with a beveled cutting edge, seated into
@@ -69,16 +82,16 @@ function makeHandle(scene: Scene, wood: PBRMaterial, length: number, thickness =
  */
 export function createAxe(scene: Scene, mats: SharedMaterials): TransformNode {
   const root = new TransformNode('tool_axe', scene);
-  const L = 0.52;
+  const L = 0.5;
 
   const handle = makeHandle(scene, mats.toolWood, L);
-  handle.position.y = -0.06;
+  handle.position.y = -GRIP_FROM_BUTT;
   handle.parent = root;
 
   // Head group at the top of the haft.
   const head = new TransformNode('axeHead', scene);
   head.parent = root;
-  head.position.y = L * 0.24 - 0.06;
+  head.position.y = L - GRIP_FROM_BUTT - 0.03;
   head.rotation.z = -0.12; // wedge leans into the swing
 
   // Stone wedge: main body + wider cutting edge bevel.
@@ -112,15 +125,15 @@ export function createAxe(scene: Scene, mats: SharedMaterials): TransformNode {
  */
 export function createPickaxe(scene: Scene, mats: SharedMaterials): TransformNode {
   const root = new TransformNode('tool_pick', scene);
-  const L = 0.78;
+  const L = 0.62;
 
   const handle = makeHandle(scene, mats.toolWood, L, 0.042);
-  handle.position.y = -0.05;
+  handle.position.y = -GRIP_FROM_BUTT;
   handle.parent = root;
 
   const head = new TransformNode('pickHead', scene);
   head.parent = root;
-  head.position.y = L * 0.24 - 0.05;
+  head.position.y = L - GRIP_FROM_BUTT - 0.03;
 
   // Center striking boss.
   const boss = box(scene, 'pickBoss', 0.13, 0.075, 0.05, mats.toolStone);
@@ -151,7 +164,48 @@ export function createPickaxe(scene: Scene, mats: SharedMaterials): TransformNod
   return root;
 }
 
+/**
+ * Stone sword: a chipped flint blade (tapered spine + lighter cutting
+ * edge), a leather-wrapped grip and a small wood guard — the same knapped
+ * look as the other stone tools, balanced for a one-handed swing.
+ */
+export function createSword(scene: Scene, mats: SharedMaterials): TransformNode {
+  const root = new TransformNode('tool_sword', scene);
+
+  // Grip: short turned rod, pommel cap at the base.
+  const grip = rod(scene, 'swordGrip', 0.035, 0.16, mats.toolWood);
+  grip.position.y = -0.06;
+  root.addChild(grip);
+  const pommel = box(scene, 'swordPommel', 0.05, 0.03, 0.05, mats.playerBoots);
+  pommel.position.y = -0.145;
+  root.addChild(pommel);
+
+  // Guard across the blade base.
+  const guard = box(scene, 'swordGuard', 0.14, 0.028, 0.045, mats.playerBoots);
+  guard.position.y = 0.035;
+  root.addChild(guard);
+
+  // Blade: main body tapering forward, plus a lighter edge line.
+  const blade = box(scene, 'swordBlade', 0.055, 0.42, 0.018, mats.toolStone);
+  blade.position.y = 0.27;
+  blade.rotation.z = 0.0;
+  root.addChild(blade);
+  const tip = box(scene, 'swordTip', 0.04, 0.1, 0.017, mats.toolStone);
+  tip.position.y = 0.52;
+  tip.rotation.z = 0.5;
+  root.addChild(tip);
+  const edge = box(scene, 'swordEdge', 0.02, 0.4, 0.021, mats.playerAccent);
+  edge.position.set(0.028, 0.27, 0);
+  root.addChild(edge);
+
+  return root;
+}
+
 /** Create a tool for the given inventory item id, or null. */
 export function createTool(kind: ToolKind, scene: Scene, mats: SharedMaterials): TransformNode {
-  return kind === 'stone_axe' ? createAxe(scene, mats) : createPickaxe(scene, mats);
+  return kind === 'stone_axe'
+    ? createAxe(scene, mats)
+    : kind === 'stone_pick'
+      ? createPickaxe(scene, mats)
+      : createSword(scene, mats);
 }

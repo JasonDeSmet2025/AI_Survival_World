@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { Color3, NullEngine, PBRMaterial, Scene, StandardMaterial, TransformNode } from '@babylonjs/core';
 import { BuildingRenderer } from './buildingMeshes';
+import {
+  BUILDING_MODULE,
+  FLOOR_SURFACE_OFFSET,
+  ROOF_RIDGE_OFFSET,
+  ROOF_SPAN,
+  WALL_HEIGHT,
+  buildingPlatforms,
+  platformSurfaceAt,
+} from './building';
 import type { SharedMaterials } from '../visual/materials';
 import type { BuildingData } from '../world/types';
 
@@ -147,5 +156,75 @@ describe('BuildingRenderer bed', () => {
     r.sync([b]);
     r.sync([b]);
     expect(r.getShadowCasters().length).toBe(16);
+  });
+});
+
+/**
+ * The contract between what you SEE and what you STAND ON.
+ *
+ * Physics reads its surfaces from systems/building.ts, the renderer builds its
+ * boxes from the same constants — these tests fail the moment the two drift
+ * apart, which is exactly the "I walked through my own floor" bug class.
+ */
+describe('BuildingRenderer geometry matches the physics constants', () => {
+  /** World-space bounds of everything the renderer built for one building. */
+  function boundsOf(kind: 'wall' | 'floor' | 'roof', x: number, z: number, y: number, rot = 0) {
+    const scene = makeScene();
+    const r = new BuildingRenderer(scene, makeMats(scene));
+    r.sync([{ id: `b_${kind}`, kind, x, z, y, rot, ownerId: 'test' } as BuildingData]);
+    const box = {
+      minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity, minZ: Infinity, maxZ: -Infinity,
+    };
+    for (const m of r.getShadowCasters()) {
+      const b = m.getBoundingInfo().boundingBox;
+      box.minX = Math.min(box.minX, b.minimumWorld.x);
+      box.maxX = Math.max(box.maxX, b.maximumWorld.x);
+      box.minY = Math.min(box.minY, b.minimumWorld.y);
+      box.maxY = Math.max(box.maxY, b.maximumWorld.y);
+      box.minZ = Math.min(box.minZ, b.minimumWorld.z);
+      box.maxZ = Math.max(box.maxZ, b.maximumWorld.z);
+    }
+    scene.dispose();
+    return { count: r.getShadowCasters().length, ...box };
+  }
+
+  it('lays the deck planks exactly on the height the player stands at, edge to edge', () => {
+    const b = boundsOf('floor', 4, 6, 2);
+    expect(b.count).toBe(6);
+    expect(b.maxY).toBeCloseTo(2 + FLOOR_SURFACE_OFFSET, 1);
+    // One full grid cell, so two floors side by side have no seam.
+    expect(b.minX).toBeCloseTo(4 - BUILDING_MODULE / 2, 1);
+    expect(b.maxX).toBeCloseTo(4 + BUILDING_MODULE / 2, 1);
+    expect(b.minZ).toBeCloseTo(6 - BUILDING_MODULE / 2, 1);
+    expect(b.maxZ).toBeCloseTo(6 + BUILDING_MODULE / 2, 1);
+  });
+
+  it('builds a wall one cell wide and exactly WALL_HEIGHT tall', () => {
+    const upright = boundsOf('wall', 4, 6, 2);
+    expect(upright.maxY).toBeCloseTo(2 + WALL_HEIGHT, 1);
+    expect(upright.minX).toBeCloseTo(4 - BUILDING_MODULE / 2, 1);
+    expect(upright.maxX).toBeCloseTo(4 + BUILDING_MODULE / 2, 1);
+    // Rotated a quarter turn the wall still fills its cell (along z this time).
+    const turned = boundsOf('wall', 4, 6, 2, 1);
+    expect(turned.minZ).toBeCloseTo(6 - BUILDING_MODULE / 2, 1);
+    expect(turned.maxZ).toBeCloseTo(6 + BUILDING_MODULE / 2, 1);
+    expect(turned.maxY).toBeCloseTo(2 + WALL_HEIGHT, 1);
+  });
+
+  it('sits the roof ridge on ROOF_RIDGE_OFFSET above its base (the wall tops)', () => {
+    const base = WALL_HEIGHT;
+    const b = boundsOf('roof', 0, 0, base);
+    expect(b.maxY).toBeCloseTo(base + ROOF_RIDGE_OFFSET, 1);
+    expect(b.minY).toBeGreaterThan(base - 0.2); // eaves, not down at the deck
+    // The slab ends at the platform span; only the decorative rafter tails
+    // overhang it (the safe direction: nothing you can stand on is invisible).
+    expect(Math.max(-b.minZ, b.maxZ)).toBeLessThanOrEqual(ROOF_SPAN + 0.02);
+
+    // Walking the roof stands on buildingPlatforms(): same ridge, same slope.
+    const [south] = buildingPlatforms({
+      id: 'b_roof', kind: 'roof', x: 0, z: 0, y: base, rot: 0, ownerId: 'test',
+    } as BuildingData);
+    expect(platformSurfaceAt(south, 0, 0)).toBeCloseTo(base + ROOF_RIDGE_OFFSET, 1);
+    expect(platformSurfaceAt(south, 0, 0.8)).toBeLessThan(platformSurfaceAt(south, 0, 0) - 0.2);
   });
 });

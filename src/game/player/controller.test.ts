@@ -8,6 +8,15 @@ import {
 } from '../world/heightfield';
 import { groundHeight } from './ground';
 import { PlayerController } from './controller';
+import {
+  FLOOR_SURFACE_OFFSET,
+  ROOF_RIDGE_OFFSET,
+  WALL_HEIGHT,
+  buildingPlatforms,
+  platformSurfaceAt,
+  wallSegment,
+  type BuildingData,
+} from '../systems/building';
 
 const DT = 1 / 60;
 const SPAWN = findSpawnPoint();
@@ -108,7 +117,7 @@ describe('PlayerController ground interaction', () => {
     const startY = groundHeight(ramp.x, ramp.z);
     const c = new PlayerController({ x: ramp.x, y: startY, z: ramp.z });
     // Yaw so that "forward" means +x.
-    const yaw = -Math.PI / 2;
+    const yaw = Math.PI / 2;
     for (let i = 0; i < 120; i++) {
       c.update(DT, input({ forward: 1 }), yaw, [], true, []);
       const g = groundHeight(c.pos.x, c.pos.z);
@@ -128,7 +137,7 @@ describe('PlayerController ground interaction', () => {
       y: groundHeight(wall.x, wall.z),
       z: wall.z,
     });
-    tick(c, 120, input({ forward: 1 }), -Math.PI / 2);
+    tick(c, 120, input({ forward: 1 }), Math.PI / 2);
     // Two seconds of pushing into a >1.25 slope: almost no forward progress.
     expect(c.pos.x - wall.x).toBeLessThan(1.0);
     expect(c.pos.y).toBeGreaterThanOrEqual(groundHeight(c.pos.x, c.pos.z) - 1e-9);
@@ -153,7 +162,7 @@ describe('PlayerController ground interaction', () => {
     const edgeY = groundHeight(cliff.x, cliff.z);
     const c = new PlayerController({ x: cliff.x, y: edgeY, z: cliff.z });
     for (let i = 0; i < 60; i++) {
-      c.update(DT, input({ forward: 1 }), -Math.PI / 2, [], true, []);
+      c.update(DT, input({ forward: 1 }), Math.PI / 2, [], true, []);
       expect(c.onGround, 'must stay grounded while walking downhill').toBe(true);
       const g = groundHeight(c.pos.x, c.pos.z);
       expect(Math.abs(c.pos.y - g)).toBeLessThan(0.05);
@@ -193,7 +202,7 @@ describe('PlayerController ground interaction', () => {
     const x = TERRAIN_SIZE / 2 - 6;
     const z = 0;
     const c = new PlayerController({ x, y: groundHeight(x, z), z });
-    tick(c, 300, input({ forward: 1 }), -Math.PI / 2);
+    tick(c, 300, input({ forward: 1 }), Math.PI / 2);
     expect(c.pos.x).toBeLessThanOrEqual(TERRAIN_SIZE / 2 - 2 + 1e-9);
     expect(c.pos.y).toBeGreaterThanOrEqual(groundHeight(c.pos.x, c.pos.z) - 1e-9);
   });
@@ -275,7 +284,7 @@ describe('PlayerController movement lock (timed crafting)', () => {
     expect(c.speed).toBeGreaterThan(4);
     const x0 = c.pos.x;
     const z0 = c.pos.z;
-    for (let i = 0; i < 120; i++) c.update(DT, input({ forward: 1, strafe: 1 }), 0, [], true, [], false);
+    for (let i = 0; i < 120; i++) c.update(DT, input({ forward: 1, strafe: 1 }), 0, [], true, [], [], false);
     expect(c.pos.x).toBeCloseTo(x0, 5);
     expect(c.pos.z).toBeCloseTo(z0, 5);
     expect(c.speed).toBe(0); // input is fully ignored
@@ -283,7 +292,7 @@ describe('PlayerController movement lock (timed crafting)', () => {
 
   it('cannot jump while locked but still snaps to the ground', () => {
     const c = new PlayerController({ x: SPAWN.x, y: SPAWN.y, z: SPAWN.z });
-    for (let i = 0; i < 60; i++) c.update(DT, input({ jumpHeld: true }), 0, [], true, [], false);
+    for (let i = 0; i < 60; i++) c.update(DT, input({ jumpHeld: true }), 0, [], true, [], [], false);
     const g = groundHeight(c.pos.x, c.pos.z);
     expect(c.onGround).toBe(true);
     expect(c.pos.y).toBeCloseTo(g, 4);
@@ -292,7 +301,7 @@ describe('PlayerController movement lock (timed crafting)', () => {
   it('vertical physics keep running: a locked player in the air still falls and lands', () => {
     const c = new PlayerController({ x: SPAWN.x, y: SPAWN.y + 6, z: SPAWN.z });
     c.vel.y = 0;
-    for (let i = 0; i < 300; i++) c.update(DT, input(), 0, [], true, [], false);
+    for (let i = 0; i < 300; i++) c.update(DT, input(), 0, [], true, [], [], false);
     const g = groundHeight(c.pos.x, c.pos.z);
     expect(c.onGround).toBe(true);
     expect(c.pos.y).toBeCloseTo(g, 3);
@@ -325,7 +334,7 @@ describe('PlayerController landing impact (fall damage events)', () => {
     const cliff = findCliff();
     const c = new PlayerController({ x: cliff.x, y: groundHeight(cliff.x, cliff.z), z: cliff.z });
     for (let i = 0; i < 120; i++) {
-      c.update(DT, input({ forward: 1 }), -Math.PI / 2, [], true, []);
+      c.update(DT, input({ forward: 1 }), Math.PI / 2, [], true, []);
       // Slope-stick keeps the player grounded: no fall event may fire.
       expect(c.consumeImpact()).toBeNull();
     }
@@ -384,10 +393,135 @@ describe('PlayerController landing impact (fall damage events)', () => {
   it('reports impacts even when movement is locked (fall physics keep running)', () => {
     const c = new PlayerController({ x: SPAWN.x, y: SPAWN.y + 6, z: SPAWN.z });
     c.vel.y = 0;
-    for (let i = 0; i < 300; i++) c.update(DT, input(), 0, [], true, [], false);
+    for (let i = 0; i < 300; i++) c.update(DT, input(), 0, [], true, [], [], false);
     const impact = c.consumeImpact();
     expect(impact).not.toBeNull();
     expect(impact!.distance).toBeGreaterThan(5.5);
     expect(impact!.distance).toBeLessThan(6.4);
+  });
+});
+
+/**
+ * Find a stretch of ground that is flat to within 6 cm over ~4 m, so a built
+ * deck's 18 cm lip is unambiguously the highest surface under the feet.
+ */
+function findFlat(): { x: number; z: number; h: number } {
+  for (let z = -120; z <= 120; z += 4) {
+    for (let x = -120; x <= 120; x += 4) {
+      const h = groundHeight(x, z);
+      if (h < SEA_LEVEL + 1.5) continue;
+      let flat = true;
+      for (let dz = -2; dz <= 2 && flat; dz++) {
+        for (let dx = -2; dx <= 2 && flat; dx++) {
+          if (Math.abs(groundHeight(x + dx, z + dz) - h) > 0.06) flat = false;
+        }
+      }
+      if (flat) return { x, z, h };
+    }
+  }
+  throw new Error('no flat ground found in terrain');
+}
+
+const PLAT_DT = 1 / 60;
+
+function structure(
+  kind: 'floor' | 'roof' | 'wall',
+  x: number,
+  z: number,
+  y: number,
+  rot = 0,
+): BuildingData {
+  return { id: `b_${kind}_${x}_${z}_${y}`, kind, x, z, y, rot, ownerId: 'tester' };
+}
+
+describe('PlayerController walking on built structures', () => {
+  it('walks up onto a placed floor deck and stands on the planks', () => {
+    const f = findFlat();
+    const deck = buildingPlatforms(structure('floor', f.x, f.z, f.h));
+    const deckTop = f.h + FLOOR_SURFACE_OFFSET;
+    const c = new PlayerController({ x: f.x, y: f.h, z: f.z - 2 });
+
+    for (let i = 0; i < 26; i++) c.update(PLAT_DT, input({ forward: 1 }), 0, [], true, [], deck);
+
+    expect(c.pos.z).toBeGreaterThan(f.z - 1); // actually entered the cell
+    expect(c.pos.z).toBeLessThan(f.z + 1); // and stopped on the deck, not past it
+    expect(c.onGround).toBe(true);
+    expect(c.pos.y).toBeCloseTo(deckTop, 6);
+  });
+
+  it('walks off the deck edge and drops back to the terrain', () => {
+    const f = findFlat();
+    const deck = buildingPlatforms(structure('floor', f.x, f.z, f.h));
+    const c = new PlayerController({ x: f.x, y: f.h + FLOOR_SURFACE_OFFSET, z: f.z });
+    for (let i = 0; i < 30; i++) c.update(PLAT_DT, input(), 0, [], true, [], deck);
+    expect(c.pos.y).toBeCloseTo(f.h + FLOOR_SURFACE_OFFSET, 6);
+
+    // Two metres of walking is enough to leave the 2 m cell and fall 18 cm.
+    for (let i = 0; i < 180; i++) c.update(PLAT_DT, input({ forward: 1 }), 0, [], true, [], deck);
+    expect(c.pos.z).toBeGreaterThan(f.z + 1);
+    expect(c.pos.y).toBeLessThan(f.h + FLOOR_SURFACE_OFFSET - 0.1);
+    expect(c.onGround).toBe(true);
+  });
+
+  it('lands on a deck above head height instead of falling through it', () => {
+    const deckTop = SPAWN.y + 5;
+    const deck = buildingPlatforms(structure('floor', SPAWN.x, SPAWN.z, deckTop - FLOOR_SURFACE_OFFSET));
+    const c = new PlayerController({ x: SPAWN.x, y: deckTop + 8, z: SPAWN.z });
+    c.vel.y = 0;
+
+    for (let i = 0; i < 90; i++) c.update(PLAT_DT, input(), 0, [], true, [], deck);
+
+    expect(c.onGround).toBe(true);
+    expect(c.pos.y).toBeCloseTo(deckTop, 6);
+    // The landing is a real impact: it is reported once, from the deck.
+    const impact = c.consumeImpact();
+    expect(impact).not.toBeNull();
+    expect(impact!.distance).toBeGreaterThan(7);
+    expect(impact!.y).toBeCloseTo(deckTop, 6);
+  });
+
+  it('stands on a pitched roof at the height the slabs are built at', () => {
+    const base = SPAWN.y + 4;
+    const roof = buildingPlatforms(structure('roof', SPAWN.x, SPAWN.z, base));
+    // Half a metre down the slope from the ridge.
+    const z = SPAWN.z + 0.5;
+    const surface = roof.reduce(
+      (best, p) => Math.max(best, platformSurfaceAt(p, SPAWN.x, z)),
+      -Infinity,
+    );
+    const c = new PlayerController({ x: SPAWN.x, y: base + ROOF_RIDGE_OFFSET + 3, z });
+    c.vel.y = 0;
+    for (let i = 0; i < 60; i++) c.update(PLAT_DT, input(), 0, [], true, [], roof);
+
+    expect(c.onGround).toBe(true);
+    expect(c.pos.y).toBeCloseTo(surface, 6);
+    expect(c.pos.y).toBeLessThan(base + ROOF_RIDGE_OFFSET); // down the slope, not at the ridge
+  });
+
+  it('cannot walk up a deck that is too high to step onto', () => {
+    const f = findFlat();
+    // A deck an arm's length above the ground is a ceiling, not a stair.
+    const deck = buildingPlatforms(structure('floor', f.x, f.z, f.h + 1.4));
+    const c = new PlayerController({ x: f.x, y: f.h, z: f.z - 2 });
+    for (let i = 0; i < 120; i++) c.update(PLAT_DT, input({ forward: 1 }), 0, [], true, [], deck);
+
+    expect(c.pos.y).toBeLessThan(f.h + FLOOR_SURFACE_OFFSET + 0.1);
+    expect(c.pos.z).toBeGreaterThan(f.z - 1.5); // walked under it, not onto it
+  });
+
+  it('is blocked by a ground-level wall but not by one a storey above', () => {
+    const f = findFlat();
+    const wall = [wallSegment(structure('wall', f.x + 2, f.z, f.h))];
+    const c = new PlayerController({ x: f.x, y: f.h, z: f.z });
+    // Facing +x: yaw = PI/2 maps forward onto the x axis.
+    for (let i = 0; i < 120; i++) c.update(PLAT_DT, input({ forward: 1 }), Math.PI / 2, [], true, wall);
+    expect(c.pos.x).toBeLessThan(f.x + 2 - 0.4); // stopped in front of the wall
+
+    const elevated = [wallSegment(structure('wall', f.x + 2, f.z, f.h + WALL_HEIGHT))];
+    const over = new PlayerController({ x: f.x, y: f.h, z: f.z });
+    for (let i = 0; i < 120; i++) {
+      over.update(PLAT_DT, input({ forward: 1 }), Math.PI / 2, [], true, elevated);
+    }
+    expect(over.pos.x).toBeGreaterThan(f.x + 2.5); // the upper-storey wall passes over the head
   });
 });

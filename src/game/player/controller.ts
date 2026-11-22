@@ -4,7 +4,7 @@ import { clamp } from '../core/noise';
 import { SEA_LEVEL, TERRAIN_SIZE } from '../world/terrain';
 import { groundHeight } from './ground';
 import type { Collider } from '../world/types';
-import type { WallSegment } from '../systems/building';
+import { platformHeightAt, type Platform, type WallSegment } from '../systems/building';
 
 const WALK_SPEED = 5.2;
 const SPRINT_SPEED = 9.2;
@@ -24,6 +24,36 @@ const MAX_SLOPE = 1.15;
  * per-frame numerical dips do not flicker the airborne state.
  */
 const GROUND_EPS = 0.02;
+/** Head height above the feet — decides whether a wall's height band applies. */
+const HEAD_HEIGHT = 1.7;
+/**
+ * Slack on both ends of a wall's height band. A wall is WALL_HEIGHT tall but
+ * its collision is a box, not a painting: the player is allowed to stand
+ * about 0.4 m above the sill (leaning over it is fine) and to duck 0.3 m
+ * under the one above before it stops blocking.
+ */
+const WALL_HEAD_SLACK = 0.4;
+const WALL_SILL_SLACK = 0.3;
+
+/**
+ * Vertical look limits (radians) of the third-person camera.
+ *
+ * Shared single source of truth: the mouse handler in `game.ts` clamps to
+ * it while playing AND the save loader clamps the restored pitch to it.
+ * The loader used to clamp with `Math.min(pitch, -0.65)` — the DEFAULT
+ * pitch — which silently flattened every upward look (and most downward
+ * ones) back to the horizon on every load.
+ */
+export const CAM_PITCH_MIN = -1.15;
+export const CAM_PITCH_MAX = 1.25;
+/** Neutral resting pitch the camera starts from (slightly downward look). */
+export const CAM_PITCH_DEFAULT = -0.65;
+
+/** Clamp a camera pitch into the playable look range (falls back to neutral). */
+export function clampCameraPitch(pitch: number): number {
+  if (!Number.isFinite(pitch)) return CAM_PITCH_DEFAULT;
+  return clamp(pitch, CAM_PITCH_MIN, CAM_PITCH_MAX);
+}
 
 export interface PlayerState {
   pos: Vector3; // feet position
@@ -70,6 +100,13 @@ export class PlayerController {
    */
   sprinting = false;
   speed = 0;
+
+  /**
+   * Land-speed multiplier (swiftness potion). The game shell sets it to
+   * SWIFT_SPEED_MULTIPLIER while the buff is active and back to 1 after;
+   * the controller itself never decides to be fast.
+   */
+  speedScale = 1;
   moveDir = 0;
   private radius = PLAYER_RADIUS;
   /** Ramped horizontal speed (m/s) — approaches the mode's target speed. */
@@ -120,6 +157,12 @@ export class PlayerController {
     canSprint: boolean,
     walls: WallSegment[] = [],
     /**
+     * Horizontal standing surfaces of player-built structures (floors and
+     * roofs). Without them the player walks straight through their own deck:
+     * the terrain mesh is the only other surface physics knows about.
+     */
+    platforms: Platform[] = [],
+    /**
      * When false the player cannot move or jump (used while a timed
      * craft is in progress). Vertical physics (gravity, landing, water
      * buoyancy) keep running, so a player working at a cliff edge still
@@ -147,12 +190,17 @@ export class PlayerController {
     else if (this.crouching) speed = CROUCH_SPEED;
     else if (wantSprint) speed = SPRINT_SPEED;
     else speed = WALK_SPEED;
+    // Swiftness potion (systems/shop.ts) — land speed only; swimming is
+    // already the great leveler. Set every frame by the game shell.
+    if (!this.inWater && this.speedScale !== 1) speed *= this.speedScale;
 
-    // Camera-relative movement basis.
+    // Camera-relative movement basis. The game shell aims the camera along
+    // (sin yaw, cos yaw) — so W must move along THAT vector, not its
+    // negative (the old sign here made forward walk backwards).
     const sin = Math.sin(yaw);
     const cos = Math.cos(yaw);
-    let dx = -sin * forward + cos * strafe;
-    let dz = -cos * forward - sin * strafe;
+    let dx = sin * forward + cos * strafe;
+    let dz = cos * forward - sin * strafe;
     const len = Math.hypot(dx, dz);
     if (len > 1e-4) {
       dx /= len;
@@ -210,8 +258,13 @@ export class PlayerController {
       }
     }
 
-    // Wall collision: push the player circle out of wall AABBs.
+    // Wall collision: push the player circle out of wall AABBs. A wall only
+    // blocks within its own height band, so standing on a second-storey deck
+    // is not held back by the ground-floor wall underneath it (and flying
+    // over a wall in a jump works).
     for (const w of walls) {
+      if (this.pos.y > w.topY - WALL_HEAD_SLACK) continue; // feet are above the wall
+      if (this.pos.y + HEAD_HEIGHT < w.baseY - WALL_SILL_SLACK) continue; // still under it
       const px = clamp(this.pos.x, w.minX, w.maxX);
       const pz = clamp(this.pos.z, w.minZ, w.maxZ);
       const ddx = this.pos.x - px;
@@ -239,6 +292,7 @@ export class PlayerController {
 
     // Vertical physics.
     const jump = allowMove && input.jumpHeld;
+    const prevFeetY = this.pos.y;
     if (this.inWater) {
       // Buoyant swimming.
       const swimUp = jump && this.pos.y < SEA_LEVEL + 0.2;
@@ -254,8 +308,14 @@ export class PlayerController {
 
     this.pos.y += this.vel.y * dt;
 
-    // Ground contact against the RENDERED surface (mesh-exact).
+    // Ground contact against the RENDERED surface (mesh-exact), or against a
+    // built surface when one is higher: a deck, a second storey, a roof.
     const gY = groundHeight(this.pos.x, this.pos.z);
+    // Feet height before this step's gravity was applied — the swept fall
+    // check in platformHeightAt needs it to catch a floor the player would
+    // otherwise tunnel through in one frame.
+    const sY = platformHeightAt(platforms, this.pos.x, this.pos.z, this.pos.y, prevFeetY, this.vel.y);
+    const standY = Math.max(gY, sY);
     if (this.inWater) {
       this.onGround = this.pos.y <= SEA_LEVEL + 0.3 && this.vel.y <= 0;
       if (this.pos.y < gY) this.pos.y = gY;
@@ -263,28 +323,29 @@ export class PlayerController {
         this.pos.y = SEA_LEVEL + 0.9;
         this.vel.y = Math.min(this.vel.y, 0);
       }
-    } else if (this.pos.y <= gY + GROUND_EPS && this.vel.y <= 0) {
+    } else if (this.pos.y <= standY + GROUND_EPS && this.vel.y <= 0) {
       // Standing, landing or walking up: snap exactly onto the visible
-      // ground so the player can never sink into the terrain mesh.
+      // surface — terrain or the built deck under the feet — so the player
+      // can never sink into the terrain mesh or through their own floor.
       // A landing after a genuine airborne fall is reported once for
       // fall damage + the landing animation (water landings never get
       // here — the inWater branch above absorbs the fall).
-      if (this.airborne && this.peakY - gY > 0.1) {
-        this.impact = { distance: this.peakY - gY, crouching: this.crouching, y: gY };
+      if (this.airborne && this.peakY - standY > 0.1) {
+        this.impact = { distance: this.peakY - standY, crouching: this.crouching, y: standY };
         this.airborne = false;
       }
-      this.pos.y = gY;
+      this.pos.y = standY;
       this.vel.y = 0;
       this.onGround = true;
-    } else if (this.onGround && this.pos.y - gY <= moved * MAX_SLOPE + 0.01) {
-      // Walking DOWN a slope: the surface drops faster than gravity can
-      // follow. Stick to the ground instead of floating, bouncing or
-      // flickering the airborne state. A real ledge drop (larger than the
-      // climbable-slope allowance for this step) falls through to the
-      // airborne branch below.
-      this.pos.y = gY;
+    } else if (this.onGround && this.pos.y - standY <= moved * MAX_SLOPE + 0.01) {
+      // Walking DOWN a slope or off a deck lip: the surface drops faster
+      // than gravity can follow. Stick to the ground instead of floating,
+      // bouncing or flickering the airborne state. A real ledge drop (larger
+      // than the climbable-slope allowance for this step) falls through to
+      // the airborne branch below.
+      this.pos.y = standY;
       this.vel.y = Math.min(this.vel.y, 0);
-    } else if (this.pos.y > gY + GROUND_EPS) {
+    } else if (this.pos.y > standY + GROUND_EPS) {
       // Airborne: jump in flight or walked off a ledge.
       this.onGround = false;
     }

@@ -11,6 +11,9 @@ if (!(hudContainer instanceof HTMLDivElement)) {
 }
 
 let game: Game | null = new Game(canvas, hudContainer);
+// Debug/QA hook: lets browser-level tests (and the owner's devtools) reach
+// the live instance. Harmless in production; no secrets involved.
+(window as unknown as Record<string, unknown>).__game = game;
 
 // Release everything on page teardown (SPAs / dev reloads).
 window.addEventListener('beforeunload', () => {

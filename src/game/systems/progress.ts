@@ -42,6 +42,8 @@ export const XP_SOURCE = {
   cook: 4,
   /** XP for one full night slept in a bed. */
   sleep: 12,
+  /** XP for one hunted animal (raw meat + hide/wool is a real meal's worth). */
+  kill: 10,
 } as const;
 
 /** XP granted by gathering a finished node of this kind (0 = no XP). */

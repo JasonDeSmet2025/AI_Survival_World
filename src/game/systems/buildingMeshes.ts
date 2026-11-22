@@ -14,17 +14,32 @@ import {
 } from '@babylonjs/core';
 import type { SharedMaterials } from '../visual/materials';
 import type { BuildingData } from '../world/types';
+import {
+  BUILDING_MODULE,
+  FENCE_HEIGHT,
+  FLOOR_SURFACE_OFFSET,
+  ROOF_PITCH,
+  ROOF_RIDGE_OFFSET,
+  ROOF_SPAN,
+  STAIRS_RISE,
+  WALL_HEIGHT,
+  type BuildingKind,
+} from './building';
 
 export interface BuildingHandle {
   id: string;
   dispose: () => void;
-  /** Update campfire state (fuel). */
+  /** Update campfire/torch state (fuel, flicker). */
   setFuel?: (fuel: number, time: number) => void;
+  /** Swing a door open or shut (rotates the live hinge — no rebuild). */
+  setOpen?: (open: boolean) => void;
 }
 
 export interface MeshHandle {
   meshes: Mesh[];
   dispose: () => void;
+  /** Door only: the live hinge node the open/close rotation drives. */
+  hinge?: TransformNode;
 }
 
 /** Small radial-gradient texture for fire particles (procedural, no assets). */
@@ -64,6 +79,9 @@ export class BuildingRenderer {
   private char: StandardMaterial;
   private mattress: PBRMaterial | null = null;
   private pillow: PBRMaterial | null = null;
+  private rugMat: PBRMaterial | null = null;
+  private rugTrimMat: PBRMaterial | null = null;
+  private leatherMat: PBRMaterial | null = null;
   private scene: Scene;
   private mats: SharedMaterials;
   private casters: Mesh[] = [];
@@ -105,8 +123,11 @@ export class BuildingRenderer {
       if (!b) {
         h.dispose();
         this.handles.delete(id);
-      } else if (h.setFuel) {
-        h.setFuel(b.fuel ?? 0, this.fireTime);
+      } else {
+        if (h.setFuel) h.setFuel(b.fuel ?? 0, this.fireTime);
+        // A door toggled by anyone (E locally or a 'toggle' in MP) swings
+        // the live hinge — cheap, and the open flag rides on world state.
+        if (h.setOpen) h.setOpen(!!b.open);
       }
     }
   }
@@ -119,7 +140,7 @@ export class BuildingRenderer {
   }
 
   /** Ghost preview for a building item the player is about to place. */
-  preview(kind: BuildingData['kind'], x: number, z: number, y: number, rot: number): MeshHandle {
+  preview(kind: BuildingKind, x: number, z: number, y: number, rot: number): MeshHandle {
     if (!this.previewHandle || this.previewKind !== kind) {
       this.disposePreview();
       this.previewHandle = this.buildMesh(kind, x, z, y, rot, true);
@@ -148,7 +169,7 @@ export class BuildingRenderer {
   }
 
   private previewHandle: MeshHandle | null = null;
-  private previewKind: BuildingData['kind'] | null = null;
+  private previewKind: BuildingKind | null = null;
 
   private disposePreview(): void {
     this.previewHandle?.dispose();
@@ -161,7 +182,7 @@ export class BuildingRenderer {
   // ------------------------------------------------------------------
 
   private buildMesh(
-    kind: BuildingData['kind'],
+    kind: BuildingKind,
     x: number,
     z: number,
     y: number,
@@ -176,6 +197,8 @@ export class BuildingRenderer {
 
     const rand = mulberry(hashStr(kind + '_' + x.toFixed(1) + '_' + z.toFixed(1)));
     const meshes: Mesh[] = [];
+    /** Door only: the live hinge node, handed back to create(). */
+    let hingeOut: TransformNode | undefined;
 
     /** Add a box relative to the building origin. */
     const box = (w: number, h: number, d: number, mat: PBRMaterial, px: number, py: number, pz: number, rx = 0, rz = 0): Mesh => {
@@ -193,6 +216,9 @@ export class BuildingRenderer {
 
     const wood = this.mats.buildingWood;
     const stone = this.mats.buildingStone;
+    // Fence posts, bench legs and sign legs are debarked trunks, not milled
+    // planks — the bark material is what makes them read as cut from a tree.
+    const barkMat = this.mats.bark;
 
     // Bed fabrics (lazily created, shared by all beds).
     const mattress = (): PBRMaterial => {
@@ -203,48 +229,123 @@ export class BuildingRenderer {
       this.pillow ??= this.makeFabric('bedPillowMat', 0.88, 0.85, 0.76, 0.92);
       return this.pillow;
     };
+    // Carpet wool + leather straps (lazily created, shared).
+    const rug = (): PBRMaterial => {
+      this.rugMat ??= this.makeFabric('rugMat', 0.66, 0.24, 0.26, 0.98);
+      return this.rugMat;
+    };
+    const rugTrim = (): PBRMaterial => {
+      this.rugTrimMat ??= this.makeFabric('rugTrimMat', 0.85, 0.76, 0.55, 0.98);
+      return this.rugTrimMat;
+    };
+    const leather = (): PBRMaterial => {
+      this.leatherMat ??= this.makeFabric('leatherMat', 0.42, 0.27, 0.14, 0.8);
+      return this.leatherMat;
+    };
 
     switch (kind) {
       case 'wall': {
-        // Corner posts with slightly varied heights, three stacked planks
-        // and a top rail — reads as built timber, not a flat board.
+        // Built to the exact grid module (BUILDING_MODULE wide) so two walls
+        // butt together with no seam. Corner posts with slightly varied
+        // heights, three stacked planks and a top rail — reads as built
+        // timber, not a flat board.
+        const edge = BUILDING_MODULE / 2;
         for (const sx of [-1, 1] as const) {
           const jitter = (rand() - 0.5) * 0.06;
-          box(0.24, 2.4 + jitter, 0.24, wood, sx * 0.98, 1.2 + jitter / 2, 0);
+          box(0.24, WALL_HEIGHT + jitter, 0.24, wood, sx * (edge - 0.12), WALL_HEIGHT / 2 + jitter / 2, 0);
         }
         const plankYs = [0.5, 1.22, 1.94];
         for (const py of plankYs) {
-          box(2.14, 0.52, 0.16, wood, 0, py + (rand() - 0.5) * 0.05, 0.02);
+          box(BUILDING_MODULE - 0.08, 0.52, 0.16, wood, 0, py + (rand() - 0.5) * 0.05, 0.02);
         }
-        box(2.24, 0.14, 0.2, wood, 0, 2.34, 0);
+        box(BUILDING_MODULE, 0.14, 0.2, wood, 0, WALL_HEIGHT - 0.07, 0);
+        break;
+      }
+      case 'stone_wall': {
+        // Same footprint as the wooden wall, but courses of neatly squared
+        // blocks — three lifts of alternating stones with mortar gaps, a
+        // heavier cap row on top. Reads as a mason's wall from 20 m away.
+        const edge = BUILDING_MODULE / 2;
+        for (const sx of [-1, 1] as const) {
+          box(0.28, WALL_HEIGHT + 0.04, 0.28, stone, sx * (edge - 0.14), WALL_HEIGHT / 2, 0);
+        }
+        const courseH = 0.3;
+        const rows = Math.floor((WALL_HEIGHT - 0.3) / courseH);
+        for (let r = 0; r < rows; r++) {
+          // Offset every other course by half a block (running bond).
+          const offset = (r % 2) * 0.42;
+          for (let i = 0; i < 3; i++) {
+            const cx = -edge + 0.4 + offset + i * 0.84 + (rand() - 0.5) * 0.05;
+            if (Math.abs(cx) > edge - 0.24) continue;
+            box(
+              0.78 + (rand() - 0.5) * 0.08,
+              courseH - 0.03,
+              0.2 + (rand() - 0.5) * 0.02,
+              stone,
+              cx,
+              0.18 + r * courseH + courseH / 2,
+              0,
+            );
+          }
+        }
+        // Coping row.
+        box(BUILDING_MODULE - 0.1, 0.16, 0.26, stone, 0, WALL_HEIGHT - 0.08, 0);
         break;
       }
       case 'floor': {
-        // Plank deck on two stringers.
+        // One full cell of decking: four planks that tile edge to edge, on two
+        // stringers. The plank top lands exactly on FLOOR_SURFACE_OFFSET, the
+        // height the physics uses to stand on — so feet and visuals agree.
+        const edge = BUILDING_MODULE / 2;
+        const plankDepth = BUILDING_MODULE / 4;
+        const plankHalfThick = 0.05;
         for (const sx of [-0.72, 0.72] as const) {
-          box(0.16, 0.12, 2.24, wood, sx, 0.04, 0);
+          box(0.16, 0.12, BUILDING_MODULE, wood, sx, 0.05, 0);
         }
         for (let i = 0; i < 4; i++) {
-          const pz = -0.77 + i * 0.51;
-          box(2.0, 0.09, 0.46, wood, (rand() - 0.5) * 0.04, 0.13, pz, 0, (rand() - 0.5) * 0.01);
+          const pz = -edge + plankDepth * (i + 0.5);
+          box(
+            BUILDING_MODULE,
+            plankHalfThick * 2,
+            plankDepth,
+            wood,
+            (rand() - 0.5) * 0.04,
+            FLOOR_SURFACE_OFFSET - plankHalfThick,
+            pz,
+            0,
+            (rand() - 0.5) * 0.008,
+          );
         }
         break;
       }
       case 'roof': {
-        // Two sloped slabs meeting at a ridge beam, with end fascias.
-        const pitch = 0.36;
-        const halfSpan = 0.72;
+        // Sits ON TOP of the walls (its base y is the wall tops), not floating
+        // above them. Two pitched slabs of exactly ROOF_PITCH meet at a ridge
+        // beam at ROOF_RIDGE_OFFSET — the same numbers buildingPlatforms()
+        // uses, so walking the roof matches what you see.
+        const edge = BUILDING_MODULE / 2;
+        const grade = Math.tan(ROOF_PITCH);
+        const slabCenter = (ROOF_SPAN - 0.02) / 2; // horizontal mid-point of one slope
+        // A hair short of the platform span: the visible eave must never poke
+        // past the surface the player can stand on.
+        const slabDepth = (ROOF_SPAN - 0.02) / Math.cos(ROOF_PITCH);
+        const halfThick = 0.045;
+        // Centre height so the TOP face of the slab passes through the ridge
+        // height at z = ridge (see the plane maths in the comment above).
+        const slabY =
+          ROOF_RIDGE_OFFSET - halfThick / Math.cos(ROOF_PITCH) - grade * slabCenter;
         for (const s of [-1, 1] as const) {
-          box(2.3, 0.1, 1.34, wood, 0, 3.02, s * halfSpan, s * pitch);
+          box(BUILDING_MODULE + 0.1, halfThick * 2, slabDepth, wood, 0, slabY, s * slabCenter, s * ROOF_PITCH);
         }
-        box(2.32, 0.16, 0.2, wood, 0, 3.22, 0);
+        box(BUILDING_MODULE + 0.15, 0.14, 0.22, wood, 0, ROOF_RIDGE_OFFSET - 0.07, 0);
+        // Gable fascias at the two ends of the ridge.
         for (const sx of [-1, 1] as const) {
-          box(0.18, 0.28, 2.34, wood, sx * 1.13, 3.05, 0);
+          box(0.16, 0.3, ROOF_SPAN * 2 - 0.1, wood, sx * (edge + 0.02), ROOF_RIDGE_OFFSET - 0.2, 0);
         }
-        // Rafter tails poking below the slabs for silhouette.
+        // Rafter tails poking below the eaves for silhouette.
         for (const s of [-1, 1] as const) {
           for (let i = 0; i < 3; i++) {
-            box(0.1, 0.2, 0.1, wood, -0.8 + i * 0.8, 2.98, s * 1.28, s * pitch);
+            box(0.1, 0.18, 0.1, wood, -0.7 + i * 0.7, ROOF_RIDGE_OFFSET - 0.32, s * (ROOF_SPAN - 0.06), s * ROOF_PITCH);
           }
         }
         break;
@@ -321,6 +422,198 @@ export class BuildingRenderer {
         box(0.55, 0.11, 0.38, pillow(), (rand() - 0.5) * 0.05, 0.69, -0.72);
         break;
       }
+      case 'door': {
+        // Same edge anchor and module as a wall — a door IS a wall segment
+        // with an opening. Frame posts + lintel stay fixed; the panel hangs
+        // on a live hinge node at the left post and swings without a rebuild
+        // (E, or a multiplayer 'toggle', only rotates one TransformNode).
+        const edge = BUILDING_MODULE / 2;
+        for (const sx of [-1, 1] as const) {
+          box(0.22, WALL_HEIGHT, 0.24, wood, sx * (edge - 0.11), WALL_HEIGHT / 2, 0);
+        }
+        box(BUILDING_MODULE, 0.2, 0.26, wood, 0, WALL_HEIGHT - 0.1, 0);
+        const hinge = new TransformNode(name + '_hinge', scene);
+        hinge.parent = root;
+        hinge.position.set(-edge + 0.22, 0, 0);
+        hingeOut = hinge;
+        // Panel meshes must NOT be frozen: their world matrix changes every
+        // time the hinge swings.
+        const loose = (w: number, h: number, d: number, mat: PBRMaterial, px: number, py: number, pz: number): Mesh => {
+          const m = MeshBuilder.CreateBox(name, { width: w, height: h, depth: d }, scene);
+          m.parent = hinge;
+          m.position.set(px, py, pz);
+          m.material = mat;
+          m.receiveShadows = false;
+          meshes.push(m);
+          return m;
+        };
+        const panelW = BUILDING_MODULE - 0.5;
+        for (let i = 0; i < 4; i++) {
+          loose(panelW / 4 - 0.02, WALL_HEIGHT - 0.3, 0.09, wood,
+            0.02 + panelW * ((i + 0.5) / 4), (WALL_HEIGHT - 0.3) / 2 + 0.04, 0);
+        }
+        // Two leather straps (the material the hinges are made of).
+        for (const sy of [0.55, WALL_HEIGHT - 0.75]) {
+          loose(panelW - 0.06, 0.13, 0.12, leather(), 0.02 + panelW / 2, sy, 0);
+        }
+        // Wooden handle on the opening side.
+        loose(0.07, 0.3, 0.07, leather(), 0.02 + panelW - 0.12, 1.05, 0.09);
+        break;
+      }
+      case 'torch': {
+        // Standing torch: iron-bound post with a permanently glowing head.
+        // The light + sparks live on the BuildingHandle (create()), mirroring
+        // the campfire, so day/night the camp reads as lived-in.
+        const post = MeshBuilder.CreateCylinder(name, {
+          diameter: 0.09, height: 1.15, tessellation: 6,
+        }, scene);
+        post.parent = root;
+        post.position.y = 0.575;
+        post.material = wood;
+        post.receiveShadows = false;
+        if (!ghost) post.freezeWorldMatrix();
+        meshes.push(post);
+        const collar = MeshBuilder.CreateCylinder(name + 'collar', {
+          diameter: 0.16, height: 0.14, tessellation: 8,
+        }, scene);
+        collar.parent = root;
+        collar.position.y = 1.12;
+        collar.material = stone;
+        collar.receiveShadows = false;
+        if (!ghost) collar.freezeWorldMatrix();
+        meshes.push(collar);
+        const flame = MeshBuilder.CreateCylinder(name + 'flame', {
+          diameterTop: 0.02, diameter: 0.13, height: 0.22, tessellation: 8,
+        }, scene);
+        flame.parent = root;
+        flame.position.y = 1.28;
+        flame.material = this.mats.fireGlow;
+        flame.receiveShadows = false;
+        if (!ghost) flame.freezeWorldMatrix();
+        meshes.push(flame);
+        break;
+      }
+      case 'carpet': {
+        // Woven rug: a full-cell wool base with a lighter inlaid band and
+        // short fringe at the two ends. Decorative — no collision, no step.
+        box(BUILDING_MODULE - 0.08, 0.03, BUILDING_MODULE - 0.08, rug(), 0, 0.035, 0);
+        box(BUILDING_MODULE - 0.55, 0.02, BUILDING_MODULE - 0.09, rugTrim(), 0, 0.06, 0);
+        for (const sz of [-1, 1] as const) {
+          for (let i = 0; i < 5; i++) {
+            box(0.06, 0.025, 0.1, rug(), -0.7 + i * 0.35, 0.02, sz * (BUILDING_MODULE / 2 - 0.03));
+          }
+        }
+        break;
+      }
+      case 'fence': {
+        // Pasture fence: three driven posts and two rails, at exactly
+        // FENCE_HEIGHT — the height buildingPlatforms() blocks movement at.
+        // Shorter than a wall on purpose: you can see the wolves coming, you
+        // just cannot run through them.
+        const edge = BUILDING_MODULE / 2;
+        for (const sx of [-1, 0, 1] as const) {
+          const jitter = (rand() - 0.5) * 0.05;
+          box(0.14, FENCE_HEIGHT + jitter, 0.14, barkMat, sx * (edge - 0.07), (FENCE_HEIGHT + jitter) / 2, 0);
+        }
+        for (const ry of [0.3, FENCE_HEIGHT - 0.12]) {
+          box(BUILDING_MODULE - 0.06, 0.11, 0.09, wood, 0, ry + (rand() - 0.5) * 0.03, 0);
+        }
+        break;
+      }
+      case 'stairs': {
+        // A broad step up: the visible block is exactly the box physics uses
+        // (see STAIRS_RISE), planked on top, so the surface you see IS the
+        // surface you stand on. The near edge gets a chamfered nose board so
+        // the step reads as "walk onto me" from a distance.
+        const edge = BUILDING_MODULE / 2;
+        box(BUILDING_MODULE - 0.06, STAIRS_RISE - 0.06, BUILDING_MODULE - 0.06, wood, 0, (STAIRS_RISE - 0.06) / 2, 0);
+        const plankDepth = (BUILDING_MODULE - 0.1) / 3;
+        for (let i = 0; i < 3; i++) {
+          box(
+            BUILDING_MODULE - 0.1,
+            0.04,
+            plankDepth - 0.03,
+            this.mats.toolWood,
+            0,
+            STAIRS_RISE - 0.02,
+            -edge + 0.05 + plankDepth * (i + 0.5),
+          );
+        }
+        // Nosing on the low side (the side you approach from).
+        box(BUILDING_MODULE - 0.04, 0.1, 0.1, this.mats.bark, 0, STAIRS_RISE - 0.05, edge - 0.05);
+        break;
+      }
+      case 'workbench': {
+        // Trestle bench: four barked legs, a thick double-plank top at table
+        // height, and the tools that make it a workshop — a whetstone and two
+        // pegs. The bench is where crafting goes 40% faster (systems/crafting).
+        const edge = BUILDING_MODULE / 2;
+        const top = 0.86;
+        for (const sx of [-1, 1] as const) {
+          for (const sz of [-1, 1] as const) {
+            box(0.13, top - 0.06, 0.13, barkMat, sx * (edge - 0.16), (top - 0.06) / 2, sz * (edge - 0.16));
+          }
+        }
+        // Cross braces, so it reads as built rather than stacked.
+        box(BUILDING_MODULE - 0.3, 0.1, 0.1, wood, 0, 0.3, 0);
+        box(0.1, 0.1, BUILDING_MODULE - 0.3, wood, 0, 0.3, 0);
+        box(BUILDING_MODULE - 0.1, 0.12, BUILDING_MODULE - 0.1, wood, 0, top, 0, 0, 0.006);
+        box(BUILDING_MODULE - 0.42, 0.07, BUILDING_MODULE - 0.24, this.mats.toolWood, 0.02, top + 0.09, 0);
+        // Whetstone + a couple of iron-white pegs lying on the top.
+        box(0.3, 0.08, 0.16, stone, -0.18, top + 0.16, 0.16, 0, 0.2);
+        box(0.44, 0.05, 0.05, this.mats.toolStone, 0.1, top + 0.15, -0.2, 0, 0.12);
+        break;
+      }
+      case 'planter': {
+        // Raised berry tray: four barked sides, a soil floor and a bush that
+        // visibly fills the tray as it grows. A handful of berries appears
+        // immediately, more as `growth` advances (the count is read from the
+        // building's own growth value by the farm system; here the plant just
+        // scales with it — see the comment in systems/farm.ts on why the
+        // renderer never has to know the exact number).
+        const edge = BUILDING_MODULE / 2;
+        for (const sx of [-1, 1] as const) {
+          box(0.1, 0.34, BUILDING_MODULE - 0.1, barkMat, sx * (edge - 0.05), 0.17, 0);
+        }
+        for (const sz of [-1, 1] as const) {
+          box(BUILDING_MODULE - 0.3, 0.34, 0.1, barkMat, 0, 0.17, sz * (edge - 0.05));
+        }
+        box(BUILDING_MODULE - 0.2, 0.08, BUILDING_MODULE - 0.2, this.mats.stump, 0, 0.2, 0);
+        // The plant itself: a low bush in the middle of the tray.
+        const bush = MeshBuilder.CreateSphere(name + 'bush', { diameter: 0.5, segments: 6 }, scene);
+        bush.parent = root;
+        bush.position.set(0, 0.45, 0);
+        bush.scaling.set(1, 0.8, 1);
+        bush.material = this.mats.bushLeaf;
+        bush.receiveShadows = false;
+        if (!ghost) bush.freezeWorldMatrix();
+        meshes.push(bush);
+        for (let i = 0; i < 5; i++) {
+          const ang = (i / 5) * Math.PI * 2;
+          const b = MeshBuilder.CreateSphere(name + `berry${i}`, { diameter: 0.1, segments: 4 }, scene);
+          b.parent = root;
+          b.position.set(Math.cos(ang) * 0.18, 0.52 + (i % 2) * 0.08, Math.sin(ang) * 0.18);
+          b.material = this.mats.berry;
+          b.receiveShadows = false;
+          if (!ghost) b.freezeWorldMatrix();
+          meshes.push(b);
+        }
+        break;
+      }
+      case 'sign': {
+        // Two posted legs and a planked board — the same sign as at the camp
+        // gate, so a player sign reads as part of the same world. Decorative:
+        // free to walk through, no prompt, nothing to read.
+        const edge = BUILDING_MODULE / 2;
+        for (const sx of [-1, 1] as const) {
+          box(0.11, 1.05, 0.11, barkMat, sx * (edge - 0.1), 0.52, 0);
+        }
+        box(BUILDING_MODULE - 0.12, 0.5, 0.08, wood, 0, 0.78, 0, 0, 0.012);
+        // Two carved grooves, so the board reads as written on.
+        box(BUILDING_MODULE - 0.4, 0.045, 0.02, this.mats.stump, 0, 0.86, -0.05);
+        box(BUILDING_MODULE - 0.55, 0.045, 0.02, this.mats.stump, -0.05, 0.72, -0.05);
+        break;
+      }
     }
 
     const dispose = () => {
@@ -333,7 +626,7 @@ export class BuildingRenderer {
     if (!ghost) {
       for (const m of meshes) this.casters.push(m);
     }
-    return { meshes, dispose };
+    return { meshes, dispose, hinge: hingeOut };
   }
 
   /** Simple flat-colour PBR fabric for bed parts (no texture needed at this scale). */
@@ -356,40 +649,56 @@ export class BuildingRenderer {
     let particles: ParticleSystem | null = null;
     let ember: Mesh | null = null;
 
-    if (b.kind === 'campfire') {
-      light = new PointLight('fireLight', new Vector3(b.x, b.y + 1, b.z), this.scene);
+    if (b.kind === 'campfire' || b.kind === 'torch') {
+      // Both carry a real flame. The campfire dims with its fuel; a torch
+      // burns forever (that is what you pay the stone + wood for).
+      const torch = b.kind === 'torch';
+      const headY = torch ? 1.3 : 1;
+      light = new PointLight(torch ? 'torchLight' : 'fireLight', new Vector3(b.x, b.y + headY, b.z), this.scene);
       light.diffuse = new Color3(1, 0.6, 0.25);
-      light.range = 14;
+      light.range = torch ? 9 : 14;
       light.intensity = 0;
 
       this.fireTex ??= fireTexture(this.scene);
-      particles = new ParticleSystem('fireParticles', 120, this.scene);
+      particles = new ParticleSystem(torch ? 'torchSmoke' : 'fireParticles', torch ? 40 : 120, this.scene);
       particles.particleTexture = this.fireTex;
-      particles.emitter = new Vector3(b.x, b.y + 0.4, b.z);
-      particles.minEmitBox = new Vector3(-0.25, 0, -0.25);
-      particles.maxEmitBox = new Vector3(0.25, 0.3, 0.25);
+      particles.emitter = new Vector3(b.x, b.y + (torch ? 1.35 : 0.4), b.z);
+      const spread = torch ? 0.06 : 0.25;
+      particles.minEmitBox = new Vector3(-spread, 0, -spread);
+      particles.maxEmitBox = new Vector3(spread, 0.3, spread);
       particles.color1 = new Color4(1, 0.75, 0.3, 0.9);
       particles.color2 = new Color4(1, 0.4, 0.1, 0.8);
       particles.colorDead = new Color4(0.2, 0.05, 0, 0);
-      particles.minSize = 0.1;
-      particles.maxSize = 0.3;
+      particles.minSize = torch ? 0.05 : 0.1;
+      particles.maxSize = torch ? 0.16 : 0.3;
       particles.minLifeTime = 0.4;
       particles.maxLifeTime = 1.0;
-      particles.emitRate = 60;
+      particles.emitRate = torch ? 25 : 60;
       particles.direction1 = new Vector3(-0.3, 1.5, -0.3);
       particles.direction2 = new Vector3(0.3, 2.5, 0.3);
       particles.gravity = new Vector3(0, 1.5, 0);
       particles.blendMode = ParticleSystem.BLENDMODE_ADD;
       particles.start();
 
-      // Glowing embers visible in the hearth while fuel lasts.
-      ember = MeshBuilder.CreateCylinder('fireEmber', {
-        diameter: 0.3, height: 0.04, tessellation: 10,
-      }, this.scene);
-      ember.position.set(b.x, b.y + 0.17, b.z);
-      ember.material = this.mats.fireGlow;
-      ember.freezeWorldMatrix();
+      if (!torch) {
+        // Glowing embers visible in the hearth while fuel lasts.
+        ember = MeshBuilder.CreateCylinder('fireEmber', {
+          diameter: 0.3, height: 0.04, tessellation: 10,
+        }, this.scene);
+        ember.position.set(b.x, b.y + 0.17, b.z);
+        ember.material = this.mats.fireGlow;
+        ember.freezeWorldMatrix();
+      }
     }
+
+    // Door: swinging the hinge beats rebuilding the mesh. The rotation is
+    // applied on the next sync() from world state (b.open), so toggling in
+    // multiplayer rides the normal state push.
+    const setOpen = handle.hinge
+      ? (open: boolean): void => {
+          if (handle.hinge) handle.hinge.rotation.y = open ? -1.9 : 0;
+        }
+      : undefined;
 
     this.handles.set(b.id, {
       id: b.id,
@@ -400,19 +709,31 @@ export class BuildingRenderer {
         if (this.fireTex && !this.handles.size) this.fireTex.dispose();
         handle.dispose();
       },
-      setFuel: (fuel: number, time: number) => {
-        if (light && particles) {
-          // Two offset sines read as organic flame flicker.
-          const flicker = 0.85 + 0.1 * Math.sin(time * 7.3 + b.x) + 0.05 * Math.sin(time * 13.1 + b.z);
-          // The fire dims during its final seconds of fuel.
-          const fade = fuel > 0 ? Math.min(1, fuel / 45) : 0;
-          light.intensity = 1.1 * flicker * fade;
-          particles.emitRate = 60 * fade;
-          if (ember) ember.setEnabled(fade > 0.2);
-        }
-      },
+      setOpen,
+      setFuel:
+        b.kind === 'campfire'
+          ? (fuel: number, time: number) => {
+              if (light && particles) {
+                // Two offset sines read as organic flame flicker.
+                const flicker = 0.85 + 0.1 * Math.sin(time * 7.3 + b.x) + 0.05 * Math.sin(time * 13.1 + b.z);
+                // The fire dims during its final seconds of fuel.
+                const fade = fuel > 0 ? Math.min(1, fuel / 45) : 0;
+                light.intensity = 1.1 * flicker * fade;
+                particles.emitRate = 60 * fade;
+                if (ember) ember.setEnabled(fade > 0.2);
+              }
+            }
+          : b.kind === 'torch'
+            ? (_fuel: number, time: number) => {
+                if (light) {
+                  light.intensity =
+                    0.95 + 0.1 * Math.sin(time * 8.7 + b.x * 3) + 0.04 * Math.sin(time * 15.3 + b.z * 3);
+                }
+              }
+            : undefined,
     });
     this.handles.get(b.id)?.setFuel?.(b.fuel ?? 0, this.fireTime);
+    this.handles.get(b.id)?.setOpen?.(!!b.open);
   }
 }
 

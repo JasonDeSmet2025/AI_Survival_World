@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_ROOT="/root/AI_Survival_World"
+
+cd "$PROJECT_ROOT"
+
+exec pi \
+  --provider vives \
+  --model qwen3.8-27b \
+  --append-system-prompt "$PROJECT_ROOT/.pi/agents/game-director.md" \
+  --name "AI Survival World - Game Director"

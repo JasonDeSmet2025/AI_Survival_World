@@ -4,7 +4,7 @@ import {
   Scene,
   StandardMaterial,
 } from '@babylonjs/core';
-import { createTextureKit, type TextureKit } from './textures';
+import { createTextureKit, type PbrTextureSet, type TextureKit } from './textures';
 
 /**
  * Shared procedural PBR materials (Visual Agent scope).
@@ -44,6 +44,12 @@ export interface SharedMaterials {
   buildingStone: PBRMaterial;
   toolWood: PBRMaterial;
   toolStone: PBRMaterial;
+  /**
+   * Raw fauna textures (crimped wool + short hide). The herd makes its own
+   * PBRMaterials and only borrows these maps, because every animal carries
+   * its own albedo tint (cream sheep, black holstein, brown jersey).
+   */
+  fauna: { wool: PbrTextureSet; hide: PbrTextureSet };
   // fx
   fireGlow: StandardMaterial;
   ghost: StandardMaterial;
@@ -157,6 +163,7 @@ export function createSharedMaterials(scene: Scene): SharedMaterials {
     buildingStone,
     toolWood,
     toolStone,
+    fauna: { wool: kit.wool, hide: kit.hide },
     fireGlow,
     ghost,
   };

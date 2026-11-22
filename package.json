@@ -7,9 +7,13 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "test": "vitest run",
-    "preview": "vite preview"
+    "test:server": "node --test server/npc.test.mjs server/server.test.mjs server/quests.test.mjs server/clock.test.mjs server/store.test.mjs server/mp-world.test.mjs",
+    "start": "node server/server.mjs",
+    "preview": "vite preview",
+    "qa:mp": "node tools/qa-mp-two-players.mjs"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.0",
     "typescript": "~7.0.2",
     "vite": "^8.3.5",
     "vitest": "^5.1.0"

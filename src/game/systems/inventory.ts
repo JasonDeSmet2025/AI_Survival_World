@@ -62,6 +62,50 @@ export class Inventory {
     return remaining;
   }
 
+  /**
+   * Total capacity (in units) that `id` could still occupy, optionally
+   * AFTER simultaneously removing `removals` (a craft/cook takes its
+   * inputs and gives its output in the same step, so the inputs must be
+   * counted as free space while the output is being placed).
+   *
+   * The number is exactly what `add()` is able to place: free room in
+   * existing stacks of the same item plus whole stacks in empty slots.
+   * Used by crafting, cooking and gathering to guarantee that a completed
+   * action never silently destroys items.
+   */
+  roomFor(id: string, removals: Array<{ id: string; count: number }> = []): number {
+    const def = ITEMS[id];
+    if (!def) return 0;
+
+    // Projected copy of the slots: the removals are applied to the copy
+    // only, so this stays a pure query (the inventory is never touched).
+    const slots: Slots = this.slots.map((s) => (s ? { ...s } : null));
+    for (const r of removals) {
+      let need = Math.max(0, r.count);
+      if (need <= 0) continue;
+      for (let i = 0; i < slots.length && need > 0; i++) {
+        const s = slots[i];
+        if (!s || s.id !== r.id) continue;
+        const take = Math.min(s.count, need);
+        s.count -= take;
+        need -= take;
+        if (s.count <= 0) slots[i] = null;
+      }
+    }
+
+    let room = 0;
+    for (const s of slots) {
+      if (!s) room += def.stack;
+      else if (s.id === id && s.count < def.stack) room += def.stack - s.count;
+    }
+    return room;
+  }
+
+  /** Whether `count` units of `id` fit (optionally after `removals`). */
+  canAdd(id: string, count = 1, removals: Array<{ id: string; count: number }> = []): boolean {
+    return this.roomFor(id, removals) >= count;
+  }
+
   /** Remove up to `count` items; returns amount actually removed. */
   remove(id: string, count: number): number {
     let removed = 0;

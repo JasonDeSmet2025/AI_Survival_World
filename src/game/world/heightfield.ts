@@ -9,6 +9,7 @@
  */
 import { clamp, fbm, lerp, ridged, smoothstep } from '../core/noise';
 import { bakeTerrainAOSubsampled } from './terrainAO';
+import { caveCarveDepth } from './caves';
 
 /** Width/depth of the square terrain tile in world units. */
 export const TERRAIN_SIZE = 640;
@@ -90,6 +91,13 @@ export function terrainHeight(x: number, z: number): number {
     const beachTarget = 0.35 + 0.45 * h;
     h = lerp(h, beachTarget, beachW * 0.85);
   }
+  // Cave ravines and chambers (deterministic carved sites — see world/
+  // caves.ts). Applied last so the beach smoother never refills a cave;
+  // every cave floor sits far above sea level by site selection, so the
+  // global water plane can never flood them. The steep carved walls turn
+  // rocky automatically through the slope-driven biome mask.
+  const carve = caveCarveDepth(x, z);
+  if (carve > 0) h -= carve;
   return h;
 }
 

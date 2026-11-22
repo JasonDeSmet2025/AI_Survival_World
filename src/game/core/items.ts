@@ -95,6 +95,125 @@ export const ITEMS: Record<string, ItemDef> = {
     id: 'bed', name: 'Wooden Bed', kind: 'building', stack: 2,
     color: [0.52, 0.4, 0.26], desc: 'Sleep in it (E) to rest until morning: full stamina, some health back.',
   },
+  // --- hunting yield -----------------------------------------------------
+  raw_mutton: {
+    id: 'raw_mutton', name: 'Rauw schapenvlees', kind: 'food', stack: 12,
+    color: [0.78, 0.35, 0.35], desc: 'Van een schaap. Rauw eetbaar maar risky — bak het op een kampvuur.',
+    edible: { hunger: 8, thirst: 0, health: -2 },
+    cookable: { output: 'cooked_mutton', seconds: 6 },
+  },
+  cooked_mutton: {
+    id: 'cooked_mutton', name: 'Gebraden schapenvlees', kind: 'food', stack: 12,
+    color: [0.62, 0.3, 0.16], desc: 'Gebakken boven het kampvuur — een echte maaltijd.',
+    edible: { hunger: 30, thirst: 2, health: 5 },
+  },
+  raw_beef: {
+    id: 'raw_beef', name: 'Rauw rundvlees', kind: 'food', stack: 12,
+    color: [0.7, 0.22, 0.24], desc: 'Van een koe. Rauw eetbaar maar risky — bak het op een kampvuur.',
+    edible: { hunger: 10, thirst: 0, health: -3 },
+    cookable: { output: 'cooked_beef', seconds: 8 },
+  },
+  cooked_beef: {
+    id: 'cooked_beef', name: 'Gebraden rundvlees', kind: 'food', stack: 12,
+    color: [0.5, 0.2, 0.12], desc: 'Gebakken boven het kampvuur — de meest vullende maaltijd.',
+    edible: { hunger: 40, thirst: 2, health: 7 },
+  },
+  wool: {
+    id: 'wool', name: 'Wol', kind: 'resource', stack: 12,
+    color: [0.9, 0.87, 0.8], desc: 'Van schapen. Zachte isolatie — tapijt en warmte.',
+  },
+  leather: {
+    id: 'leather', name: 'Leder', kind: 'resource', stack: 12,
+    color: [0.55, 0.36, 0.2], desc: 'Van runderen. Sterk scharnier- en bindingmateriaal.',
+  },
+  // --- new structures -----------------------------------------------------
+  door: {
+    id: 'door', name: 'Houten Deur', kind: 'building', stack: 4,
+    color: [0.48, 0.34, 0.18], desc: 'Sluit je huis af (E = openen/sluiten). Lederen scharnieren.',
+  },
+  stone_wall: {
+    id: 'stone_wall', name: 'Stenen Muur', kind: 'building', stack: 10,
+    color: [0.58, 0.57, 0.54], desc: 'Muur van netjes opgetrokken steen — zelfde raster als houten muren.',
+  },
+  torch: {
+    id: 'torch', name: 'Fakkelperk', kind: 'building', stack: 5,
+    color: [1, 0.68, 0.25], desc: 'Staande fakkel. Verlicht je kamp en terras ’s nachts.',
+  },
+  carpet: {
+    id: 'carpet', name: 'Wollen Tapijt', kind: 'building', stack: 6,
+    color: [0.72, 0.28, 0.3], desc: 'Wol op je vloer — puur knus, maar het staat lekker.',
+  },
+  sword: {
+    id: 'sword', name: 'Stenen Zwaard', kind: 'tool', stack: 1,
+    color: [0.75, 0.76, 0.8], desc: 'Scherp genoeg om dieren neer te slaan en andere spelers te verwonden. LMB zwaait.',
+    // Each swing costs one swing-animation of wear (~200 strikes total).
+    tool: { maxDurability: 100, wearPerSec: 1.4 },
+  },
+  potion_heal: {
+    id: 'potion_heal', name: 'Genezingsdrank', kind: 'food', stack: 5,
+    color: [0.9, 0.2, 0.35], desc: 'Van de heks — herstelt 40 gezondheid in één slok.',
+    edible: { hunger: 2, thirst: 6, health: 40 },
+  },
+  potion_swift: {
+    id: 'potion_swift', name: 'Snelheidsdrank', kind: 'food', stack: 5,
+    color: [0.95, 0.75, 0.15], desc: 'Van de heks — 90 seconden ren je als de wind.',
+    edible: { hunger: 1, thirst: 5, health: 1 },
+  },
+  potion_night: {
+    id: 'potion_night', name: 'Nachtzichtdrank', kind: 'food', stack: 5,
+    color: [0.35, 0.55, 0.95], desc: 'Van de heks — 120 seconden licht rondom jou in het donker.',
+    edible: { hunger: 1, thirst: 5, health: 1 },
+  },
+  // --- second building tier (added with the extra craft list) -------------
+  rope: {
+    id: 'rope', name: 'Touw', kind: 'resource', stack: 12,
+    color: [0.82, 0.72, 0.45], desc: 'Gevlochten wol. Draai je touw van — nodig voor de jachtboog.',
+  },
+  arrow: {
+    id: 'arrow', name: 'Pijl', kind: 'resource', stack: 20,
+    color: [0.72, 0.66, 0.55], desc: 'Verbruiksitem: elke schoot met de boog kost er één.',
+  },
+  bow: {
+    id: 'bow', name: 'Jachtboog', kind: 'tool', stack: 1,
+    color: [0.62, 0.44, 0.24],
+    desc: 'LMB schiet tot 22 m ver — dieren van afstand strikken. Kost per schoot een pijl.',
+    // Each shot pays one draw animation of wear (~300 arrows before it snaps).
+    tool: { maxDurability: 90, wearPerSec: 1.2 },
+  },
+  shield: {
+    id: 'shield', name: 'Houten Schild', kind: 'tool', stack: 1,
+    color: [0.5, 0.36, 0.22],
+    desc: 'Geselecteerd = de helft minder schade van klappen en vallen. Slijt per blok.',
+    // Blocks are charged as flat wear (SHIELD_BLOCK_WEAR), not per second:
+    // 90 blocks before it shatters, which is the whole point of carrying one.
+    tool: { maxDurability: 180, wearPerSec: 2 },
+  },
+  fence: {
+    id: 'fence', name: 'Houten Hek', kind: 'building', stack: 10,
+    color: [0.52, 0.4, 0.26], desc: 'Lijnt je kavel af. Loop er niet overheen — wel omheen.',
+  },
+  stairs: {
+    id: 'stairs', name: 'Houten Trap', kind: 'building', stack: 4,
+    color: [0.54, 0.42, 0.26], desc: 'Loopt in één cel omhoog (+0,9 m). Zet de richting met je kijkhoek.',
+  },
+  workbench: {
+    id: 'workbench', name: 'Tekentafel', kind: 'building', stack: 2,
+    color: [0.46, 0.34, 0.2],
+    desc: 'Je eerste werkplek. Alleen hier maak je bouw-, wapen- en kledingrecepten — en je werkt er 40% sneller.',
+  },
+  planter: {
+    id: 'planter', name: 'Bloempot', kind: 'building', stack: 4,
+    color: [0.5, 0.38, 0.24], desc: 'Plant een struik erin: elke 90 s rijpe bessen (E om te plukken).',
+  },
+  sign: {
+    id: 'sign', name: 'Houten Bord', kind: 'building', stack: 6,
+    color: [0.58, 0.45, 0.28], desc: 'Een bord op een paal. Duidelijk voor wie langskomt.',
+  },
+  stew: {
+    id: 'stew', name: 'Hutpot', kind: 'food', stack: 6,
+    color: [0.6, 0.36, 0.2], desc: 'Gaarvuurmaaltijd in één kom — het vullendst wat je kunt maken.',
+    edible: { hunger: 55, thirst: 10, health: 14 },
+  },
 };
 
 export interface Recipe {
@@ -113,6 +232,19 @@ export interface Recipe {
    * by systems/progress.ts and systems/crafting.ts from this single field.
    */
   unlockLevel?: number;
+  /**
+   * true = doable anywhere, with bare hands in the open field. Missing =
+   * the recipe needs a WORK STATION: the player must stand within
+   * BENCH_RADIUS of their own tekentafel (`workbench`, systems/crafting.ts).
+   *
+   * The default is deliberately the strict one: a new recipe is a project,
+   * not a keystroke. The whole tech tree therefore hangs off ONE milestone —
+   * collect wood, make the table, and only then the house, the bow, the
+   * stew pot — which is also what keeps the craft menu small in the first
+   * half hour of the game. Which recipes stay `fieldRecipe` is pinned by
+   * items.test.ts, so the set can never drift silently.
+   */
+  fieldRecipe?: boolean;
 }
 
 export const RECIPES: Recipe[] = [
@@ -124,6 +256,7 @@ export const RECIPES: Recipe[] = [
       { id: 'stone', count: 1 },
     ],
     craftSeconds: 3,
+    fieldRecipe: true,
   },
   {
     id: 'recipe_pick',
@@ -133,6 +266,7 @@ export const RECIPES: Recipe[] = [
       { id: 'stone', count: 2 },
     ],
     craftSeconds: 3,
+    fieldRecipe: true,
   },
   {
     id: 'recipe_campfire',
@@ -142,6 +276,7 @@ export const RECIPES: Recipe[] = [
       { id: 'stone', count: 2 },
     ],
     craftSeconds: 4,
+    fieldRecipe: true,
   },
   {
     id: 'recipe_wall',
@@ -175,6 +310,150 @@ export const RECIPES: Recipe[] = [
       { id: 'stone', count: 2 },
     ],
     craftSeconds: 5,
+    unlockLevel: 4,
+  },
+  {
+    id: 'recipe_torch',
+    fieldRecipe: true,
+    output: { id: 'torch', count: 2 },
+    inputs: [
+      { id: 'wood', count: 2 },
+      { id: 'stone', count: 1 },
+    ],
+    craftSeconds: 3,
+    unlockLevel: 2,
+  },
+  {
+    id: 'recipe_stone_wall',
+    output: { id: 'stone_wall', count: 2 },
+    inputs: [{ id: 'stone', count: 6 }],
+    craftSeconds: 5,
+    unlockLevel: 3,
+  },
+  {
+    id: 'recipe_door',
+    output: { id: 'door', count: 1 },
+    inputs: [
+      { id: 'wood', count: 6 },
+      { id: 'leather', count: 1 },
+    ],
+    craftSeconds: 5,
+    unlockLevel: 3,
+  },
+  {
+    id: 'recipe_carpet',
+    output: { id: 'carpet', count: 1 },
+    inputs: [
+      { id: 'wool', count: 4 },
+      { id: 'wood', count: 2 },
+    ],
+    craftSeconds: 4,
+    unlockLevel: 3,
+  },
+  {
+    id: 'recipe_sword',
+    output: { id: 'sword', count: 1 },
+    inputs: [
+      { id: 'stone', count: 6 },
+      { id: 'wood', count: 3 },
+      { id: 'leather', count: 1 },
+    ],
+    craftSeconds: 6,
+    unlockLevel: 2,
+  },
+  // --- second tier: the hunting + building expansion ---------------------
+  {
+    id: 'recipe_rope',
+    fieldRecipe: true,
+    output: { id: 'rope', count: 2 },
+    inputs: [{ id: 'wool', count: 3 }],
+    craftSeconds: 3,
+    unlockLevel: 2,
+  },
+  {
+    id: 'recipe_fence',
+    output: { id: 'fence', count: 2 },
+    inputs: [{ id: 'wood', count: 4 }],
+    craftSeconds: 4,
+    unlockLevel: 2,
+  },
+  {
+    id: 'recipe_sign',
+    output: { id: 'sign', count: 1 },
+    inputs: [{ id: 'wood', count: 2 }],
+    craftSeconds: 2,
+    unlockLevel: 2,
+  },
+  {
+    id: 'recipe_shield',
+    output: { id: 'shield', count: 1 },
+    inputs: [
+      { id: 'wood', count: 5 },
+      { id: 'leather', count: 2 },
+    ],
+    craftSeconds: 5,
+    unlockLevel: 3,
+  },
+  {
+    id: 'recipe_stairs',
+    output: { id: 'stairs', count: 1 },
+    inputs: [
+      { id: 'wood', count: 6 },
+      { id: 'stone', count: 2 },
+    ],
+    craftSeconds: 5,
+    unlockLevel: 3,
+  },
+  {
+    id: 'recipe_workbench',
+    // THE first milestone of the game: six sticks and a few minutes of work,
+    // and every other recipe opens up. Deliberately level 1 and deliberately
+    // cheap enough that a fresh player can reach it before the first night.
+    fieldRecipe: true,
+    output: { id: 'workbench', count: 1 },
+    inputs: [{ id: 'wood', count: 6 }],
+    craftSeconds: 5,
+    unlockLevel: 1,
+  },
+  {
+    id: 'recipe_planter',
+    output: { id: 'planter', count: 1 },
+    inputs: [
+      { id: 'wood', count: 6 },
+      { id: 'stone', count: 4 },
+    ],
+    craftSeconds: 5,
+    unlockLevel: 3,
+  },
+  {
+    id: 'recipe_bow',
+    output: { id: 'bow', count: 1 },
+    inputs: [
+      { id: 'wood', count: 4 },
+      { id: 'rope', count: 2 },
+    ],
+    craftSeconds: 6,
+    unlockLevel: 4,
+  },
+  {
+    id: 'recipe_arrow',
+    output: { id: 'arrow', count: 4 },
+    inputs: [
+      { id: 'wood', count: 1 },
+      { id: 'stone', count: 1 },
+    ],
+    craftSeconds: 3,
+    unlockLevel: 4,
+  },
+  {
+    id: 'recipe_stew',
+    output: { id: 'stew', count: 2 },
+    inputs: [
+      { id: 'cooked_beef', count: 1 },
+      { id: 'cooked_mutton', count: 1 },
+      { id: 'berry', count: 2 },
+    ],
+    craftSeconds: 6,
     unlockLevel: 4,
   },
 ];

@@ -12,6 +12,29 @@ import type { SharedMaterials } from '../visual/materials';
 export type PlayerPose = 'idle' | 'walk' | 'sprint' | 'jump' | 'swim' | 'crouch';
 
 /**
+ * Wrist-local pose for a hand tool.
+ *
+ * The tool models run along their own +Y (head above the fist). The right
+ * wrist's local +Y points back up the forearm (the elbow sits at wrist-local
+ * (0, 0.26, 0)), so a tool parented without a rotation is drawn straight
+ * through the arm — the "axe and sword stuck in my arm" look.
+ *
+ * rotationX ≈ +1.75 rad (≈100°) turns the tool off the arm axis so it runs
+ * out of the fist forward and up (the usual carry angle), and the +X offset
+ * moves the haft outboard of the forearm so nothing clips through it. The
+ * tilt is wrist-relative, so the tool keeps its angle in the fist while the
+ * arm swings.
+ */
+export const HELD_TOOL_POSE = {
+  /** Offset from the wrist joint, in wrist space (+X = away from the body). */
+  position: new Vector3(0.095, -0.02, 0.035),
+  /** Rotate the tool off the arm axis: 0 = straight up the forearm. */
+  rotationX: 1.75,
+  /** Twist of the haft (negative leans the head outboard). */
+  rotationZ: -0.1,
+} as const;
+
+/**
  * Third-person survivor character built from primitives (no external
  * assets) with two-segment limbs, boots, backpack and a held tool.
  *
@@ -246,11 +269,21 @@ export class PlayerCharacter {
   onToolShadows: ((added: Mesh[], removed: Mesh[]) => void) | null = null;
   private toolMeshes: Mesh[] = [];
 
+  /** Duration of the attack slash overlay (seconds). */
+  static readonly SWING_TIME = 0.35;
+  private swingT = 0;
+
+  /** Play a one-shot melee slash on the right arm (tool follows the hand). */
+  startSwing(): void {
+    this.swingT = PlayerCharacter.SWING_TIME;
+  }
+
   setTool(itemId: string | null): void {
     const kind: ToolKind | null =
       itemId === 'stone_axe' ? 'stone_axe'
         : itemId === 'stone_pick' ? 'stone_pick'
-          : null;
+          : itemId === 'sword' ? 'sword'
+            : null;
     if (kind === this.toolKind) return;
     const removed = this.toolMeshes;
     if (this.tool) {
@@ -264,10 +297,9 @@ export class PlayerCharacter {
     if (kind) {
       this.tool = createTool(kind, this.root.getScene(), this.mats);
       this.tool.parent = this.wristR;
-      // Grip: handle points up out of the hand, angled slightly forward.
-      this.tool.position.set(0, -0.02, 0.01);
-      this.tool.rotation.x = 0.15;
-      this.tool.rotation.z = 0.1;
+      // Grip: the haft runs up out of the fist, clear of the arm (see HELD_TOOL_POSE).
+      this.tool.position.copyFrom(HELD_TOOL_POSE.position);
+      this.tool.rotation.set(HELD_TOOL_POSE.rotationX, 0, HELD_TOOL_POSE.rotationZ);
       // NOTE: in Babylon 9.33 getChildMeshes(true) means DIRECT children
       // only; tool parts (handle grip/butt, axe head) are nested deeper, so
       // false is required to register every part as a shadow caster.
@@ -470,6 +502,22 @@ export class PlayerCharacter {
       this.armR.rotation.x += (-1.2 + chew - this.armR.rotation.x) * ek;
       this.elbowR.rotation.x += (-1.9 - this.elbowR.rotation.x) * ek;
       this.armR.rotation.z += (0.2 - this.armR.rotation.z) * ek;
+    }
+
+    // Melee swing overlay (combat): the right arm slashes down through the
+    // arc over SWING_TIME, additive on top of whichever pose is active —
+    // same trick the landing dip uses for the knees.
+    if (this.swingT > 0) {
+      this.swingT = Math.max(0, this.swingT - dt);
+      const t = 1 - this.swingT / PlayerCharacter.SWING_TIME;
+      const arc = Math.sin(Math.min(1, Math.max(0, t)) * Math.PI);
+      this.armR.rotation.x -= arc * 1.25;
+      this.elbowR.rotation.x -= arc * 0.55;
+      // Absolute (not `-=`): the tool must snap back to its grip pose when
+      // the slash ends. A per-frame `-=` would drift the wrist pose forever.
+      if (this.tool) this.tool.rotation.x = HELD_TOOL_POSE.rotationX - arc * 0.5;
+    } else if (this.tool && this.tool.rotation.x !== HELD_TOOL_POSE.rotationX) {
+      this.tool.rotation.x = HELD_TOOL_POSE.rotationX;
     }
 
     // Body bob + crouch drop (root scale kept, hips move).
