@@ -1,0 +1,40 @@
+# Build context hygiene: only what `npm ci` + `npm run build` + the server need.
+# Everything excluded here can never end up in an image layer.
+
+# --- Secrets: never part of any build context, ever -------------------------
+.env
+.env.*
+.env.local
+.env.*.local
+
+# --- Git and agent/IDE state -------------------------------------------------
+.git
+.gitignore
+.pi
+.vscode
+.idea
+.DS_Store
+
+# --- Regenerated artefacts (rebuilt inside the image) -----------------------
+node_modules
+dist
+dist-ssr
+*.log
+logs
+*.tmp.mjs
+
+# --- Runtime world data: lives in the Docker volume, never in the image -----
+server/data
+
+# --- Not needed to build or run the game ------------------------------------
+tools
+docs
+Dockerfile
+compose.yaml
+.dockerignore
+README.md
+AGENTS.md
+ARCHITECTURE.md
+MEMORY.md
+ROADMAP.md
+TASKS.md
