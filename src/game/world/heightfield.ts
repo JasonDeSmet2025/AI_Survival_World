@@ -10,6 +10,8 @@
 import { clamp, fbm, lerp, ridged, smoothstep } from '../core/noise';
 import { bakeTerrainAOSubsampled } from './terrainAO';
 import { caveCarveDepth } from './caves';
+import { volcanoDelta } from './volcano';
+import { isleDelta } from './villageIsle';
 
 /** Width/depth of the square terrain tile in world units. */
 export const TERRAIN_SIZE = 640;
@@ -98,6 +100,16 @@ export function terrainHeight(x: number, z: number): number {
   // rocky automatically through the slope-driven biome mask.
   const carve = caveCarveDepth(x, z);
   if (carve > 0) h -= carve;
+  // The volcano (see world/volcano.ts): plateau cone + carved crater bowl
+  // + trench ravine, one smooth delta applied last like the cave carve. Its
+  // site was scanned clear of every other height-field feature, so the
+  // terms never overlap, and the dry summit can never flood.
+  h += volcanoDelta(x, z, h);
+  // The second island and the village on it (see world/villageIsle.ts): the
+  // same delta trick as the volcano, applied last. Its delta is never
+  // negative and is exactly 0 outside its footprint, so the original island —
+  // spawn, beaches, lake, cave ramps — can only be added to, never altered.
+  h += isleDelta(x, z, h);
   return h;
 }
 

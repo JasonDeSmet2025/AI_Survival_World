@@ -170,6 +170,7 @@ export function sanitizeProfile(p) {
 
   const pos = typeof p.pos === 'object' && p.pos !== null ? p.pos : {};
   const progress = typeof p.progress === 'object' && p.progress !== null ? p.progress : null;
+  const perks = typeof p.perks === 'object' && p.perks !== null ? p.perks : null;
 
   return {
     name: typeof p.name === 'string' ? p.name.slice(0, 24) : null,
@@ -192,6 +193,18 @@ export function sanitizeProfile(p) {
     yaw: clamp(num(p.yaw, 0), -1e4, 1e4),
     progress: progress && Number.isFinite(progress.level) && Number.isFinite(progress.xp)
       ? { level: clamp(Math.round(progress.level), 1, 99), xp: clamp(num(progress.xp, 0), 0, 1e7) }
+      : null,
+    // Perk tree (talents). The server stays STRUCTURAL: the real tree —
+    // which ids exist, which chain they need — lives in the game client,
+    // which re-validates strictly on load. Point totals and id lists are
+    // clamped here so a forged upload cannot inflate the store.
+    perks: perks
+      ? {
+          points: clamp(Math.round(num(perks.points, 0)), 0, 99),
+          owned: Array.isArray(perks.owned)
+            ? [...new Set(perks.owned.filter((x) => typeof x === 'string').map((x) => x.slice(0, 32)))].slice(0, 16)
+            : [],
+        }
       : null,
     savedAt: Date.now(),
     // How many stacks this upload contained that the game does not know.

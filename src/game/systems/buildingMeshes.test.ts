@@ -68,7 +68,10 @@ describe('BuildingRenderer bed', () => {
     for (const mesh of meshes) {
       expect(mesh.isEnabled()).toBe(true);
       expect(mesh.isDisposed()).toBe(false);
-      expect(mesh.material).toBe(mats.buildingWood);
+      // Wood meshes wear the plank material OR one of its shared tint
+      // clones (bwSun/bwShade/bwWeather) — the per-building tone is the
+      // point; the family is what's contractual.
+      expect(['wood', 'bwSun', 'bwShade', 'bwWeather']).toContain((mesh.material as { name: string }).name);
       expect(mesh.receiveShadows).toBe(false);
       const bounds = mesh.getBoundingInfo().boundingBox;
       expect(bounds.minimumWorld.x).toBeGreaterThan(6);

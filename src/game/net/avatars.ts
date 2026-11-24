@@ -171,6 +171,17 @@ export class RemoteAvatars {
   }
 
   /**
+   * Show what a remote survivor carries in their hand (item id, '' = empty;
+   * PlayerCharacter.setTool validates against ITEMS, so a malicious or
+   * broken id can never spawn a prop). No-ops when it did not change.
+   */
+  setHeld(id: string, held: string | undefined): void {
+    const a = this.avatars.get(id);
+    if (!a) return;
+    a.char.setTool(held ? held : null);
+  }
+
+  /**
    * Interpolate every avatar. Called once per rendered frame.
    *
    * The old code called `freezeWorldMatrix()` on remote meshes and then

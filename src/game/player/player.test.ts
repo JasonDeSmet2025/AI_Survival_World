@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Color3, Mesh, NullEngine, PBRMaterial, Scene, TransformNode } from '@babylonjs/core';
 import { PlayerCharacter } from './player';
+import { ITEMS } from '../core/items';
 import type { SharedMaterials } from '../visual/materials';
 
 /**
@@ -236,6 +237,26 @@ describe('PlayerCharacter geometry', () => {
     // in Babylon 9.33) leaked all of them into the scene.
     for (const m of removed) expect(m.isDisposed(), `tool part ${m.name} leaked`).toBe(true);
     expect(descendantMeshes(char).length).toBe(before);
+  });
+
+  it('every single item id gets a hand model — the bow complaint', () => {
+    // The player's original gripe: holding the bow (and every resource and
+    // food) showed nothing at all. Now the hand must carry a real prop for
+    // every id in the item table, and swapping must not leak meshes.
+    const { char } = makeCharacter();
+    const ids = Object.keys(ITEMS);
+    expect(ids.length).toBeGreaterThan(30);
+    const base = descendantMeshes(char).length;
+    for (const id of ids) {
+      char.setTool(id);
+      const held = descendantMeshes(char).length;
+      expect(held, `item ${id} shows nothing in the hand`).toBeGreaterThan(base);
+      char.setTool(null);
+      expect(descendantMeshes(char).length, `item ${id} leaked a mesh`).toBe(base);
+    }
+    // An unknown id (a remote player's phantom) must not equip anything.
+    char.setTool('-this-does-not-exist');
+    expect(descendantMeshes(char).length).toBe(base);
   });
 
   it('dispose removes every part from the scene', () => {

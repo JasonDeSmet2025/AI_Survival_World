@@ -31,6 +31,8 @@ export interface MpProfile {
   pos: { x: number; y: number; z: number };
   yaw: number;
   progress: { level: number; xp: number } | null;
+  /** Perk tree (systems/perks.ts). Optional: older servers drop it. */
+  perks?: { points: number; owned: string[] } | null;
 }
 
 export interface MpHello {
@@ -58,8 +60,8 @@ export interface MpHello {
 
 export type MpMessage =
   | MpHello
-  | { t: 'p'; id: string; p: [number, number, number]; r: number }
-  | { t: 'joined'; id: string; name: string; p?: [number, number, number]; r?: number }
+  | { t: 'p'; id: string; p: [number, number, number]; r: number; h?: string }
+  | { t: 'joined'; id: string; name: string; p?: [number, number, number]; r?: number; h?: string }
   | { t: 'left'; id: string }
   | { t: 'placed'; b: BuildingData }
   /**
@@ -249,13 +251,14 @@ export class MultiplayerClient {
     }
   }
 
-  /** Send player position + facing (throttled to ~10 Hz). */
-  sendPos(x: number, y: number, z: number, r: number): void {
+  /** Send player position + facing + held item (throttled to ~10 Hz). */
+  sendPos(x: number, y: number, z: number, r: number, held?: string): void {
     if (this.status !== 'connected' || !this.ws) return;
     const now = Date.now();
     if (now - this.lastPosSent < 95) return;
     this.lastPosSent = now;
-    this.ws.send(JSON.stringify({ t: 'pos', p: [x, y, z], r }));
+    // `h` is what the OTHER survivors see in your fist (item id or '').
+    this.ws.send(JSON.stringify({ t: 'pos', p: [x, y, z], r, h: held ?? '' }));
   }
 
   sendHarvest(nodeId: string, bonus = 0): void {

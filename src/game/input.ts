@@ -9,7 +9,7 @@
  *
  * Default scheme:
  *  W/S/A/D + arrows  move · Space jump/swim · Shift sprint · C crouch (hold)
- *  E interact · F harvest (hold) · B craft menu · I/Esc bag · Q drop · R eat
+ *  E interact · F harvest (hold) · B craft menu · K perk tree · I/Esc bag · Q drop · R eat
  *  LMB attack/shoot · O settings · PgUp/PgDn build height · 1-8 hotbar
  *  Scrollwheel  zoom the camera (third person ↔ first person)
  *  RMB          let go of the mouse, so the cursor can click the HUD

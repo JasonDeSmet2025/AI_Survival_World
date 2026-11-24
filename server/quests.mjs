@@ -68,6 +68,36 @@ export const QUEST_TEMPLATES = {
     goal: { type: 'build', kind: 'campfire', count: 1 },
     reward: { xp: 25, items: [] },
   },
+  heks_zijde: {
+    id: 'heks_zijde',
+    npc: 'heks',
+    title: 'Zijde voor haar bandages',
+    desc:
+      'De heks wringt zich ' +
+      'elke ochtend door de enge trappen van haar toren en heeft 4 draadspinzzijde nodig uit de ' +
+      'spinnekoppen of de grotten. Ze betaalt met kruid uit haar tuin.',
+    goal: { type: 'gather', item: 'silk', count: 4 },
+    reward: { xp: 30, items: [{ id: 'herb', count: 2 }] },
+  },
+  heks_zalf: {
+    id: 'heks_zalf',
+    npc: 'heks',
+    title: 'Haar eigen zalf koken',
+    desc: 'Ze geeft je twee bessen en wat kruid: kook 1 zalf op je eigen kampvuur en kom bragend terug.',
+    goal: { type: 'craft', item: 'salve', count: 1 },
+    reward: { xp: 25, items: [{ id: 'gold', count: 5 }] },
+  },
+  heks_elementen: {
+    id: 'heks_elementen',
+    npc: 'heks',
+    title: 'Glas uit de krater',
+    desc:
+      'Ze ruikt vuurpoeder aan je jas en haar ogen gaan branden: of je dócht ' +
+      'drie handenvol glasgruis uit de krater van de berg wilt halen. Ze wacht, ' +
+      'en ze betaalt met kruid en goud.',
+    goal: { type: 'gather', item: 'element_fire', count: 3 },
+    reward: { xp: 45, items: [{ id: 'herb', count: 3 }, { id: 'gold', count: 4 }] },
+  },
 };
 
 /** Quest ids one specific NPC is allowed to hand out. */

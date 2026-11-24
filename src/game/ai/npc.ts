@@ -79,27 +79,123 @@ interface NpcRoutinePoint {
   dwell: number;
 }
 
+/**
+ * The witch's persona. Deliberately NOT part of NPC_PROFILES: that array
+ * spawns the villagers at the camp, and she does not live at the camp — she
+ * lives in her tower (world/tower.ts) and the game spawns her there. She is
+ * still a full `Npc`: same conversation pipeline (ai/chat.ts), same memory,
+ * same save slot, same server persona (server/npc.mjs `heks`).
+ */
+export const WITCH_PROFILE: NpcProfile = {
+  id: 'heks',
+  name: 'De Heks',
+  persona:
+    'Je speelt de heks van de stenen toren, een oude, sarkastische vrouwenhandelaar die drankjes ruilt ' +
+    'tegen jachtbuit. Ze is trots, grommend en gehecht aan haar spullen, praat in korte stekige zinnen ' +
+    'met een grijns, en waarschuwt iedereen die een zwaard naar haar trekt. Ze is geen vriendin — ze is ' +
+    'een zaak.',
+  fallbackLines: [
+    'Materialen. Wol, leer, steen, bessen. Drankjes. Zo werkt handel.',
+    'Aan mijn spullen zitten, jong? De toren bewaakt zichzelf.',
+    'Mara en Tomas praten te veel. Ik ruil. Dat is het hele geheim.',
+    'Een zwaard voor mijn deur? Tel tot tien en loop weg.',
+  ],
+  shirt: new Color3(0.16, 0.11, 0.22),
+  pants: new Color3(0.12, 0.09, 0.16),
+  skin: new Color3(0.72, 0.66, 0.5),
+  hair: new Color3(0.78, 0.78, 0.82),
+};
+
+/**
+ * The three islanders of the second island (world/villageIsle.ts). They are
+ * ordinary `Npc`s — same wander route, same conversation pipeline — but they
+ * do not live at the camp, so game.ts spawns them at their own home spots and
+ * they are not in `NPC_PROFILES` (which drives the camp pair).
+ *
+ * Server personas for them live in server/npc.mjs; if the server does not know
+ * one, the `fallbackLines` below carry the voice — which is why they are
+ * written as things these three would actually say about their own island.
+ */
+export const VILLAGER_PROFILES: NpcProfile[] = [
+  {
+    id: 'sien',
+    name: 'Sien',
+    persona:
+      'Je speelt Sien, de vissersvrouw van het eildorp. Ze is nuchter, lachend en handig met knopen, ' +
+      'praat over het water, het getij en wat de zee vandaag geeft, in korte gewone zinnen. Ze kent de ' +
+      'brug en de overkant, en waarschuwt voor de nachten.',
+    fallbackLines: [
+      'De boten liggen droog. Te veel wind, te weinig vissen.',
+      'Over die brug kun je. Vlak en recht, hij staat stevig.',
+      'Aan de overkant is bos en vuur. Hier is water en zout.',
+      'Nacht is geen tijd om rond te lopen, vreemdeling. Maar hier ben je veilig.',
+    ],
+    shirt: new Color3(0.24, 0.42, 0.46),
+    pants: new Color3(0.2, 0.24, 0.3),
+    skin: new Color3(0.79, 0.63, 0.47),
+    hair: new Color3(0.11, 0.09, 0.09),
+  },
+  {
+    id: 'ansel',
+    name: 'Ansel',
+    persona:
+      'Je speelt Ansel, de oudste van het eildorp. Hij praat traag en bedaard over de kerk, de geschiedenis ' +
+      'van het dorp en wat men van de speler verwacht. Vriendelijk, formeel, een beetje zweverig, in ' +
+      'volle zinnen.',
+    fallbackLines: [
+      'Wij zijn hier gebleven, toen de zee steeg. De toren blijft staan.',
+      'Binnen de kerk is het stil. Dat is de hele reden van een kerk.',
+      'Wie voor het eerst over de brug komt, hoort bij het dorp. Geef het tijd.',
+      'De put is oud, de straat is ouder, de brug is nieuw. Schik je.',
+    ],
+    shirt: new Color3(0.42, 0.36, 0.28),
+    pants: new Color3(0.26, 0.23, 0.2),
+    skin: new Color3(0.82, 0.68, 0.53),
+    hair: new Color3(0.86, 0.85, 0.82),
+  },
+  {
+    id: 'joris',
+    name: 'Joris',
+    persona:
+      'Je speelt Joris, de metselaar van het eildorp. Hij praat over steen, metselwerk, daken en wat er ' +
+      'nodig is om iets te laten staan. Hij is direct en tevreden over zijn eigen werk, en vertelt graag ' +
+      'waar hij zelf aan heeft gebouwd. Korte nuchtere zinnen.',
+    fallbackLines: [
+      'Die huizen stehen. Zestien jaar, geen barst. Ik heb ze gezet.',
+      'Steen op steen, met een gat voor de deur. Zo werkt metselen.',
+      'De brug is van balken, niet van steen. Op drijfhout heb je niets.',
+      'Twee boten, vijf huizen, één kerk. Meer heeft een dorp niet nodig.',
+    ],
+    shirt: new Color3(0.5, 0.44, 0.36),
+    pants: new Color3(0.3, 0.28, 0.24),
+    skin: new Color3(0.75, 0.58, 0.42),
+    hair: new Color3(0.2, 0.13, 0.09),
+  },
+];
+
 export class Npc {
   readonly profile: NpcProfile;
   readonly root: TransformNode;
   private scene: Scene;
-  private hipL: TransformNode;
-  private hipR: TransformNode;
-  private kneeL: TransformNode;
-  private kneeR: TransformNode;
-  private shoulderL: TransformNode;
-  private shoulderR: TransformNode;
-  private elbowL: TransformNode;
-  private elbowR: TransformNode;
-  private headNode: TransformNode;
-  private yaw = 0;
-  private route: NpcRoutinePoint[];
-  private routeIndex = 0;
-  private dwellTimer = 0;
-  private phase = 0;
-  private idleTime = 0;
-  private speed: number;
-  private materials: PBRMaterial[] = [];
+  // Joint hierarchy — `protected` so ai/witch.ts can drive a hostile chase
+  // cycle without reaching around the base class.
+  protected hipL: TransformNode;
+  protected hipR: TransformNode;
+  protected kneeL: TransformNode;
+  protected kneeR: TransformNode;
+  protected shoulderL: TransformNode;
+  protected shoulderR: TransformNode;
+  protected elbowL: TransformNode;
+  protected elbowR: TransformNode;
+  protected headNode: TransformNode;
+  protected yaw = 0;
+  protected route: NpcRoutinePoint[];
+  protected routeIndex = 0;
+  protected dwellTimer = 0;
+  protected phase = 0;
+  protected idleTime = 0;
+  protected speed: number;
+  protected materials: PBRMaterial[] = [];
 
   constructor(
     scene: Scene,
@@ -107,6 +203,9 @@ export class Npc {
     camp: { x: number; z: number; y: number },
     seed: number,
     mats: SharedMaterials,
+    /** Route tuning for landmark dwellers (the witch patrols a ring around
+     * her tower shell instead of wandering through it). */
+    opts?: { ring?: [min: number, max: number] },
   ) {
     this.profile = profile;
     this.scene = scene;
@@ -188,7 +287,34 @@ export class Npc {
       this.headNode, 0.13, 0.138).material = skinMat;
 
     // Silhouette details per villager.
-    if (profile.id === 'mara') {
+    if (profile.id === 'heks') {
+      // The witch: crooked pointed hat, long grey hair falling past the
+      // shoulders, and a dark shawl over the robe — readable at 20 metres.
+      const shawl = p('shawl', MeshBuilder.CreateCylinder('sh', {
+        diameterTop: 0.42, diameterBottom: 0.62, height: 0.34, tessellation: 10,
+      }, scene), torso, 0.12);
+      shawl.material = shirtMat;
+      for (const side of [-1, 1]) {
+        const strand = p(`hairFall${side < 0 ? 'L' : 'R'}`,
+          MeshBuilder.CreateSphere('hf', { diameter: 0.12, segments: 8 }, scene),
+          this.headNode, 0.02, -0.06, side * 0.13);
+        strand.scaling.set(0.7, 2.4, 0.7);
+        strand.material = hairMat;
+      }
+      const brim = p('hatBrim', MeshBuilder.CreateCylinder('hb', { diameter: 0.62, height: 0.03, tessellation: 12 }, scene),
+        this.headNode, 0.27, 0.01);
+      brim.rotation.z = 0.07;
+      brim.material = bootMat;
+      const cone = p('hatCone', MeshBuilder.CreateCylinder('hc', {
+        diameterTop: 0.012, diameterBottom: 0.34, height: 0.7, tessellation: 8,
+      }, scene), this.headNode, 0.6, 0.02);
+      cone.rotation.z = -0.16; // the crooked tip — a witch's hat is never straight
+      cone.material = bootMat;
+      const buckleBelt = p('charmBelt', MeshBuilder.CreateTorus('cbt', {
+        diameter: 0.4, thickness: 0.03, tessellation: 10,
+      }, scene), hips, 0.05);
+      buckleBelt.material = mats.playerAccent;
+    } else if (profile.id === 'mara') {
       // Ponytail hanging from the back of the hair cap.
       const tail = p('ponytail', MeshBuilder.CreateSphere('pt', { diameter: 0.14, segments: 8 }, scene),
         this.headNode, 0.1, -0.17);
@@ -266,11 +392,13 @@ export class Npc {
     [this.hipL, this.kneeL] = leg('L', -1);
     [this.hipR, this.kneeR] = leg('R', 1);
 
-    // Deterministic wander route around the camp.
+    // Deterministic wander route around the camp (or a ring around the
+    // landmark the NPC lives at — the witch patrols outside her tower shell).
     this.route = [];
+    const [rMin, rSpan] = opts?.ring ?? [4, 7];
     for (let i = 0; i < 5; i++) {
       const a = (i / 5) * Math.PI * 2 + rng();
-      const r = 4 + rng() * 7;
+      const r = rMin + rng() * rSpan;
       const x = camp.x + Math.cos(a) * r;
       const z = camp.z + Math.sin(a) * r;
       this.route.push({ x, z, dwell: 2 + rng() * 6 });

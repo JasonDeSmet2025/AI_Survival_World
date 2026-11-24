@@ -14,16 +14,83 @@ import {
   Mesh,
   PointLight,
   Scene,
-  TransformNode,
   Vector3,
 } from '@babylonjs/core';
 import { Conversation } from './ai/chat';
-import { Npc, NPC_PROFILES } from './ai/npc';
+import { Npc, NPC_PROFILES, VILLAGER_PROFILES, WITCH_PROFILE } from './ai/npc';
+import { Witch } from './ai/witch';
 import { Animal } from './ai/animals';
 import { mulberry32 } from './core/noise';
 import { ANIMALS, herdSpot, rollDrops, type AnimalKind } from './systems/fauna';
 import { CAVE_SITES, WITCH_HOME, caveKeepOut, witchKeepOut } from './world/caves';
-import { buildCaveInterior, buildWitch, buildWitchHut, type Decor } from './visual/decor';
+import {
+  towerChests,
+  towerFloorAt,
+  towerIsNear,
+  towerKeepOut,
+  towerSite,
+  towerSlabs,
+  towerSpiders,
+  towerStairs,
+  towerWalls,
+  type TowerSite,
+} from './world/tower';
+import {
+  VENT,
+  VOLCANO_NAME,
+  inCraterLava,
+  volcanoChests,
+  volcanoIsNear,
+  volcanoKeepOut,
+  volcanoLake,
+  volcanoSpiders,
+  type VolcanoChest,
+} from './world/volcano';
+import {
+  SPIDER_COIN_CHANCE,
+  SPIDER_COIN_RANGE,
+  SPIDER_HERB_CHANCE,
+  SPIDER_HERB_RANGE,
+  SPIDER_SILK_DROP,
+  Spider,
+} from './ai/spiders';
+import {
+  chestStateFromArray,
+  chestStateToArray,
+  emptyChestState,
+  openChest,
+  type ChestState,
+} from './systems/chests';
+import { SPIDER_BITE_DAMAGE, withStrength, withTough } from './systems/combat';
+import {
+  APPEASE_COST,
+  WITCH_ANGER,
+  WITCH_HIT_DAMAGE,
+  angerWitch,
+  chatMoodDelta,
+} from './systems/witch';
+import {
+  closeDeal,
+  dealWrap,
+  GOLD,
+  haggle,
+  isVendor,
+  openSession,
+  type Session,
+} from './systems/negotiation';
+import { buildCaveInterior, buildChest, buildVolcanoShrine, buildWitchHut, type ChestDecor, type Decor, type VolcanoFx } from './visual/decor';
+import { buildTowerVisual } from './visual/towerVisual';
+import { buildVillageVisual } from './visual/villageVisual';
+import {
+  ISLE_APPROACH,
+  VILLAGERS,
+  bridgePlan,
+  isleDist,
+  villagerSpawn,
+  villageKeepOuts,
+  villageFloors,
+  villageWalls,
+} from './world/villageIsle';
 import {
   animalMeleeDamage,
   animalRangedDamage,
@@ -34,6 +101,7 @@ import {
   inBowRange,
   inSwingRange,
   playerMeleeDamage,
+  spiderMeleeDamage,
   validIncomingHit,
   SHOOT_ANIM_TIME,
   SHIELD_BLOCK_WEAR,
@@ -46,8 +114,55 @@ import {
   canAfford as offerAffordable,
   priceLabel,
   trade as performTrade,
+  type ShopOffer,
 } from './systems/shop';
+import {
+  type QualityMode,
+  type QualitySettings,
+  type QualityState,
+  type QualityTier,
+  newQualityState,
+  settingsFor,
+  stepQuality,
+  tierLabel,
+} from './systems/quality';
+
+const QUALITY_STORAGE_KEY = 'iso.qualityTier';
+const QUALITY_MODE_KEY = 'iso.qualityMode';
+
+function isTier(v: string | unknown): v is QualityTier {
+  return v === 'high' || v === 'medium' || v === 'low' || v === 'potato';
+}
+
+/**
+ * The player's image-quality wish: 'auto' (the fps state machine drives),
+ * or a fixed tier. A pre-mode build stored the earned tier under the old
+ * key; that was never a wish, so when no explicit mode was ever stored we
+ * start auto and let the state machine re-prove the machine today.
+ */
+function loadQualityMode(): QualityMode {
+  try {
+    const mode = localStorage.getItem(QUALITY_MODE_KEY);
+    if (mode === 'auto' || isTier(mode)) return mode;
+  } catch {
+    /* storage blocked: auto is the right default there too */
+  }
+  return 'auto';
+}
+
+/** The tier this machine earned last session, or full quality. */
+function loadQualityTier(): QualityState {
+  const state = newQualityState();
+  try {
+    const saved = localStorage.getItem(QUALITY_STORAGE_KEY);
+    if (isTier(saved)) state.tier = saved;
+  } catch {
+    /* storage blocked: always start at full quality and let fps decide */
+  }
+  return state;
+}
 import { harvestSeconds, ITEMS, RECIPES, toolForNode, YIELDS } from './core/items';
+import { rollElementDrop } from './systems/elements';
 import { InputController } from './input';
 import { Hud } from './hud/hud';
 import { MultiplayerClient, type MpMessage, type MpProfile, type MpStatus } from './net/mp';
@@ -77,6 +192,29 @@ import { FpsMeter } from './systems/fps';
 import { harvestToast, resolveHarvest } from './systems/harvest';
 import { addWood, burnFuel, CAMPFIRE, isLit, justDied, warmthFrom } from './systems/campfire';
 import { CookSession, COOK, cookHasRoom, cookOutput, isCokable } from './systems/cook';
+import {
+  PERKS,
+  buyPerk,
+  canBuy,
+  craftTimeMul,
+  damageTakenMul,
+  fallDamageMul,
+  farmGrowthMul,
+  grantPerkPoints,
+  hasPerk,
+  isPerkState,
+  meleeDamageMul,
+  moveSpeedMul,
+  newPerkState,
+  pruneOrphanPerks,
+  shopPriceMul,
+  snapshotPerks,
+  staminaDrainMul,
+  treeLayout,
+  witchAngerMul,
+  witchDecayMul,
+  type PerkState,
+} from './systems/perks';
 import { CraftSession, Crafting, BENCH_SPEED_SCALE, needsTable, nearestWorkbench } from './systems/crafting';
 import {
   PLANTER_CROP,
@@ -239,10 +377,48 @@ export class Game {
   private animals: Animal[] = [];
   // --- landmarks + combat state (see world/caves.ts, systems/combat.ts) ---
   private decor: Decor[] = [];
-  private witchRoot: TransformNode | null = null;
-  private witchTick: ((dt: number, t: number) => void) | null = null;
-  private witchAt = new Vector3(0, -100, 0);
+  // --- The witch's tower (world/tower.ts + ai/witch.ts) ---------------------
+  /** Scanned flat pad for the tower (computed once, field-init order safe). */
+  private tower: TowerSite = towerSite();
+  /** Collision data for the tower shell/floors/stairs (same structs as
+   * player-built houses — the controller needs zero new physics). */
+  private towerWallData = towerWalls(this.tower);
+  private towerPlatformData = [...towerSlabs(this.tower), ...towerStairs(this.tower)];
+  /** The witch herself: an NPC who trades (E), talks (N) and hexes (anger). */
+  private witch: Witch | null = null;
+  private towerAnnounced = false;
+  // --- The second island: its bridge and its village (world/villageIsle.ts) ---
+  /** The crossing's geometry — ONE plan, shared by collision and renderer. */
+  private isleBridge = bridgePlan(terrainHeight);
+  /** Every cottage and church wall, as the controller's own AABB structs. */
+  private villageWallData = villageWalls();
+  /** The flagstone floors inside those walls (a house has a floor, not grass). */
+  private villageFloorData = villageFloors();
+  private villageAnnounced = false;
   private shopOpen = false;
+  /** Perk tree (systems/perks.ts): points earned with levels, perks bought. */
+  private perks: PerkState = newPerkState();
+  private perkOpen = false;
+  // --- The volcano: De Slak van As (see world/volcano.ts) ---
+  /** Lava shimmer + chest lid tick, driven from the frame loop. */
+  private volcanoFx: VolcanoFx | null = null;
+  /** Every landmark loot chest (volcano strongboxes AND tower chests) in
+   * one list; `y` overrides the terrain height for chests on tower floors. */
+  private landmarkChests: Array<{ def: VolcanoChest; decor: ChestDecor; y: number | null }> = [];
+  /** Every landmark spider (volcano den + tower garrison) in one list. */
+  private landmarkSpiders: Spider[] = [];
+  private chestsState: ChestState = emptyChestState();
+  private deadSpiderIds = new Set<string>();
+  private volcanoAnnounced = false;
+  private lavaBurnT = 0;
+  private lavaWarned = false;
+  // --- Negotiation table (systems/negotiation.ts) ---
+  private nego: { session: Session } | null = null;
+  private negoOpen = false;
+  /** Per-session rng counter (deterministic per world seed). */
+  private negoCounter = 0;
+  /** Deals closed in the current session — colours the closing remark. */
+  private negoDeals = 0;
   /** Combat clock (seconds of survived play) — swing/hit rate gates. */
   private combatT = 0;
   private lastSwingAt = -1e9;
@@ -253,6 +429,12 @@ export class Game {
   /** Potion buff timers (seconds remaining). */
   private swiftT = 0;
   private nightT = 0;
+  /** Vuurdrank: immune to lava while > 0. */
+  private fireT = 0;
+  /** Krachtdrank: melee/ranged damage doubled while > 0. */
+  private strengthT = 0;
+  /** Houtenhuid: incoming damage halved (after the shield) while > 0. */
+  private toughT = 0;
   private nightLight: PointLight | null = null;
   private animalSeq = 0;
   /** In-progress hunt on an animal (hold F), mirrors `gathering`. */
@@ -309,6 +491,16 @@ export class Game {
   private camPillT = 0;
   /** Debounce for saving the zoom: one write per gesture burst, not per event. */
   private camSaveT = 0;
+  /**
+   * Adaptive quality state (systems/quality.ts). Starts at the tier this
+   * machine earned last session (localStorage) and re-proves itself every
+   * fps window, so a GPU that got a new driver steps back up on its own.
+   */
+  private qualityState = loadQualityTier();
+  /** 'auto' = fps drives; a tier name = the player's fixed wish. */
+  private qualityMode: QualityMode = loadQualityMode();
+  /** The settings actually pushed to engine/postfx/materials, or null pre-apply. */
+  private qualityApplied: QualitySettings | null = null;
   /** Last pointer-lock state pushed to the HUD (push only on change). */
   private pointerShown = false;
   /**
@@ -431,6 +623,10 @@ export class Game {
     this.lighting = new Lighting(this.scene, this.sky, this.water, terrain.material);
     // Camera post chain: bloom + underwater tint (visual/postfx.ts).
     this.postfx = new PostFx(this.scene, this.camera);
+    // Adaptive quality: start at the player's saved tier (or full quality)
+    // so a weak GPU is running at its comfortable resolution from frame 1
+    // instead of after the first stutter storm.
+    this.applyQuality();
 
     // Shared world state + flora
     this.world = new SharedWorldState();
@@ -439,6 +635,11 @@ export class Game {
       { x: this.camp.x, z: this.camp.z, r: 8 },
       ...caveKeepOut(),
       witchKeepOut(),
+      towerKeepOut(this.tower),
+      ...volcanoKeepOut(),
+      // The island's pad, street, bridge corridor and buildings stay clear of
+      // trees, bushes and grazing herds — the village is authored, not grown.
+      ...villageKeepOuts(this.isleBridge),
     ];
     this.floraHandle = populateFlora(this.scene, this.mats, this.world, this.colliders, keepOut);
     // The flora wind shader gets the same live sun/ambient values as the
@@ -502,6 +703,17 @@ export class Game {
     this.spawnFauna();
     this.buildCaves();
     this.buildWitchSite();
+    this.buildTowerSite();
+    this.buildVolcanoSite();
+    this.buildVillageSite();
+    // The witch is a FULL conversation NPC (server persona `heks`) — she
+    // just does not live at the camp, so she is not in NPC_PROFILES.
+    this.conversations.set(WITCH_PROFILE.id, new Conversation(WITCH_PROFILE, '/api/chat'));
+    // The three islanders are full conversation NPCs too (server personas
+    // `sien`, `ansel`, `joris`) — they live on the second island, not at camp.
+    for (const profile of VILLAGER_PROFILES) {
+      this.conversations.set(profile.id, new Conversation(profile, '/api/chat'));
+    }
     // Night-sight potion: a soft aura light riding the camera, zero when
     // the buff is down so it costs nothing on normal frames.
     this.nightLight = new PointLight('nightEye', new Vector3(0, -100, 0), this.scene);
@@ -629,6 +841,7 @@ export class Game {
         // Spawn at the joiner's real position — (0,0,0) made every remote
         // player pop at the world origin and then teleport.
         this.addRemote(m.id, m.name, m.p?.[0] ?? 0, m.p?.[1] ?? 5, m.p?.[2] ?? 0, m.r ?? 0);
+        this.avatars.setHeld(m.id, m.h);
         this.refreshRoster();
         break;
       case 'left':
@@ -670,6 +883,7 @@ export class Game {
         break;
       case 'p': {
         this.avatars.setTarget(m.id, { x: m.p[0], y: m.p[1], z: m.p[2], r: m.r ?? 0 });
+        this.avatars.setHeld(m.id, m.h);
         break;
       }
       case 'placed':
@@ -731,6 +945,17 @@ export class Game {
                 : `+${got} ${ITEMS[yieldDef.itemId].name}`,
             );
             this.grantXp(gatherXp(node.kind));
+          }
+          // The four elements: each kind of nature carries one (systems/
+          // elements.ts) — the crater's rocks are the risky jackpot.
+          const el = rollElementDrop(node.kind, node.x, node.z, Math.random);
+          if (el) {
+            const elLeft = this.inventory.add(el.itemId, el.count);
+            const elGot = el.count - elLeft;
+            if (elGot > 0) {
+              this.hud.toast(`element! +${elGot} ${ITEMS[el.itemId].name}`);
+              this.settleQuests(this.quests.progress({ type: 'gather', target: el.itemId, count: elGot }));
+            }
           }
         }
         if (remaining <= 0) this.floraRefresh();
@@ -836,6 +1061,13 @@ export class Game {
     }
     this.inventory.restore(me.inventory, me.selected);
     if (me.progress) this.progress.restore(me.progress);
+    if (me.perks && isPerkState(me.perks)) {
+      this.perks = { points: me.perks.points, owned: [...me.perks.owned] };
+      pruneOrphanPerks(this.perks);
+    } else if (me.progress) {
+      // Same rule as the solo save: levels already earned pay their points.
+      this.perks.points = Math.max(this.perks.points, (me.progress.level || 1) - 1);
+    }
     // A player never reloads into a corpse: the server may have stored them
     // mid-death, so respawn at the camp instead of showing the death overlay.
     if (me.stats.dead) {
@@ -885,6 +1117,32 @@ export class Game {
     }
     this.quests.restore(data.quests);
     this.hud.setQuests(this.questHudList());
+    // Volcano state: which strongboxes are already emptied and which den
+    // spiders stay dead (world/volcano.ts + systems/chests.ts).
+    this.chestsState = chestStateFromArray(data.chests);
+    this.deadSpiderIds = new Set(data.spidersDead ?? []);
+    for (const c of this.landmarkChests) {
+      if (this.chestsState.opened.has(c.def.id)) c.decor.setOpen(true);
+    }
+    for (const s of this.landmarkSpiders) {
+      // Restored dead: let the collapse animation play out on the first
+      // ticks (the spider stays untargetable — it is already `dead`).
+      if (this.deadSpiderIds.has(s.id)) s.damage(999);
+    }
+    // The witch's mood survives a reload: an insulted witch stays insulted
+    // (systems/witch.ts — the number is the whole state).
+    if (this.witch && typeof data.witchAnger === 'number') {
+      this.witch.restoreAnger(data.witchAnger);
+    }
+    // The perk tree. A save from before the tree existed still loads — and
+    // gets credited for the levels it already earned, because those levels
+    // were paid for in XP the old save DID count.
+    if (data.perks && isPerkState(data.perks)) {
+      this.perks = { points: data.perks.points, owned: [...data.perks.owned] };
+      pruneOrphanPerks(this.perks);
+    } else {
+      this.perks.points = Math.max(this.perks.points, this.progress.level - 1);
+    }
     if (this.stats.dead) {
       this.stats.respawn();
       this.inventory.applyDeathPenalty();
@@ -927,6 +1185,10 @@ export class Game {
     data.npcs = {};
     for (const [id, conv] of this.conversations) data.npcs[id] = conv.serialize();
     data.quests = this.quests.serialize();
+    data.chests = chestStateToArray(this.chestsState);
+    data.spidersDead = [...this.deadSpiderIds];
+    if (this.witch) data.witchAnger = Math.round(this.witch.state.anger * 10) / 10;
+    data.perks = snapshotPerks(this.perks);
     Save.write(data);
     if (cursorFrom !== null) {
       if (this.invCursor) {
@@ -998,9 +1260,19 @@ export class Game {
     this.listen('hud-quest-decline', (e: Event) => this.onQuestDecline((e as CustomEvent<string>).detail));
     this.listen('hud-mp-name', (e: Event) => this.setPlayerName((e as CustomEvent<string>).detail));
     this.listen('hud-settings-close', () => this.setSettingsOpen(false));
+    this.listen('hud-quality', (e: Event) => this.setQualityMode((e as CustomEvent<string>).detail));
     this.listen('hud-reset-world', () => this.resetWorld());
     this.listen('hud-shop-close', () => this.setShopOpen(false));
     this.listen('hud-trade', (e: Event) => this.doTrade((e as CustomEvent<string>).detail));
+    this.listen('hud-perk-close', () => this.setPerkOpen(false));
+    this.listen('hud-perk-buy', (e: Event) => this.doBuyPerk((e as CustomEvent<string>).detail));
+    this.listen('hud-nego-close', () => this.setNegoOpen(false));
+    this.listen('hud-nego-bid', (e: Event) => {
+      const d = (e as CustomEvent<{ id: string; delta: number }>).detail;
+      this.doNegoBid(d.id, d.delta);
+    });
+    this.listen('hud-nego-haggle', (e: Event) => this.doNegoHaggle((e as CustomEvent<string>).detail));
+    this.listen('hud-nego-deal', (e: Event) => this.doNegoDeal((e as CustomEvent<string>).detail));
     // --- Settings menu: controls. The HUD only captures the pressed key and
     // reports it; validating, applying and storing it is decided here (the
     // rules live in systems/keybinds.ts, which is unit-tested).
@@ -1090,6 +1362,7 @@ export class Game {
     if (open) {
       // The panel shows the LIVE key map, so what you see is what you play.
       this.hud.setControls(this.bindings, this.mouseSens);
+      this.hud.setQualityMode(this.qualityMode);
       try {
         document.exitPointerLock?.();
       } catch {
@@ -1140,6 +1413,7 @@ export class Game {
       pos: { x: this.controller.pos.x, y: this.controller.pos.y, z: this.controller.pos.z },
       yaw: this.camYaw,
       progress: this.progress.snapshot(),
+      perks: snapshotPerks(this.perks),
     };
   }
 
@@ -1213,7 +1487,9 @@ export class Game {
    * undo the workshop's help.
    */
   private benchScale(): number {
-    return this.atWorkbench() ? BENCH_SPEED_SCALE : 1;
+    // Snelle handen works everywhere; the workbench bonus stacks on top.
+    const perk = 1 / craftTimeMul(this.perks);
+    return (this.atWorkbench() ? BENCH_SPEED_SCALE : 1) * perk;
   }
 
   /**
@@ -1223,9 +1499,13 @@ export class Game {
    */
   private absorb(amount: number): number {
     if (!(amount > 0)) return 0;
+    // Gehard bloed softens EVERY blow before the shield even looks at it
+    // (systems/perks.ts) — absorb() is the single choke point for damage
+    // the player takes: spider, witch, lava and falls all come through here.
+    amount *= damageTakenMul(this.perks);
     const held = this.selectedItemId();
-    const after = absorbDamage(amount, held);
-    if (after < amount) {
+    const after = withTough(absorbDamage(amount, held), this.toughT > 0);
+    if (absorbDamage(amount, held) < amount) {
       const wear = wearTool(this.inventory, this.inventory.selected, SHIELD_BLOCK_WEAR);
       if (wear.broke) this.hud.toast('Je schild is aan gruzelementen geslagen!');
     }
@@ -1328,6 +1608,23 @@ export class Game {
     if (!npc) return;
     const conv = this.conversations.get(npc.profile.id);
     if (!conv) return;
+    // The witch reads YOUR mood in your own words — a dumb keyword gate
+    // (systems/witch.ts), never the model's reply text: only the player can
+    // insult or appease her, offline exactly like online.
+    if (npc.profile.id === WITCH_PROFILE.id && this.witch) {
+      const delta = chatMoodDelta(text) * (chatMoodDelta(text) > 0 ? witchAngerMul(this.perks) : 1);
+      if (delta > 0) {
+        const flipped = angerWitch(this.witch.state, delta);
+        this.hud.toast(
+          flipped
+            ? 'Haar ogen vlammen op — de HANDELAAR is weg, alleen de HEKS is over'
+            : 'De heks steekt een vinger op: „Nog één woord...” (woede stijgt)',
+        );
+      } else if (delta < 0) {
+        angerWitch(this.witch.state, delta);
+        this.hud.toast('Ze knikt traag. Een woord op de goede plaats.');
+      }
+    }
     // Real conversation = real quest progress (talk goals). Counted here,
     // never inferred from chat content.
     this.settleQuests(this.quests.progress({ type: 'talk', target: npc.profile.id, count: 1 }));
@@ -1491,9 +1788,24 @@ export class Game {
         radius: a.kind === 'cow' ? 1.15 : 0.85,
       });
     }
-    // The witch stands by her cauldron and always trades.
-    if (this.witchRoot) {
-      targets.push({ kind: 'witch', x: this.witchAt.x, y: this.witchAt.y, z: this.witchAt.z, radius: 1.6 });
+    // --- Volcano: the strongboxes on the crater floor + the den spiders
+    // (world/volcano.ts + ai/spiders.ts). Spiders stop being targets the
+    // moment they die — the mesh is gone with them.
+    for (const c of this.landmarkChests) {
+      const root = c.decor.root;
+      targets.push({ kind: 'chest', id: c.def.id, x: root.position.x, y: root.position.y + 0.55, z: root.position.z, radius: 0.9 });
+    }
+    for (const s of this.landmarkSpiders) {
+      if (!s.alive) continue;
+      const p = s.position;
+      targets.push({ kind: 'spider', id: s.id, x: p.x, y: p.y + 0.45, z: p.z, radius: 0.65 });
+    }
+    // The witch trades and talks — while she is physically present (the
+    // smoke trick takes her out of the world for WITCH_RETURN_S seconds,
+    // and an un-targetable smoke witch is exactly the point).
+    if (this.witch && this.witch.present) {
+      const p = this.witch.root.position;
+      targets.push({ kind: 'witch', x: p.x, y: p.y + 1.15, z: p.z, radius: 1.7 });
     }
     // In multiplayer a friend is only a target while you hold the sword:
     // otherwise they would shadow the campfire/bed prompts behind them.
@@ -1565,7 +1877,7 @@ export class Game {
             this.hud.toast(`Rugzak vol — geen ruimte voor ${name}`);
             return;
           }
-          const session = CookSession.start(sel, this.inventory, { id: b.id, fuel: b.fuel });
+          const session = CookSession.start(sel, this.inventory, { id: b.id, fuel: b.fuel }, 1 / craftTimeMul(this.perks));
           if (session) {
             this.cook = session;
             this.hud.toast(
@@ -1655,9 +1967,22 @@ export class Game {
       }
       case 'witch': {
         this.setShopOpen(!this.shopOpen);
-        if (this.shopOpen) this.hud.toast('De heks grijnst: "Materialen ruil ik, geen vriendjes."');
+        if (this.shopOpen) {
+          this.hud.toast(
+            this.witch && this.witch.hostile
+              ? 'Ze sist door samengeknepen tanden: „Verdwijn — of betaal.”'
+              : 'De heks grijnst: „Materialen ruil ik, geen vriendjes.”',
+          );
+        }
         break;
       }
+      case 'chest':
+        this.openLandmarkChest(target.id);
+        break;
+      case 'spider':
+        // A spider answers to the sword, not to words (LMB — see tryMeleeAttack).
+        this.hud.toast('Praten heeft geen zin — deze spin heeft acht poten en geen geduld');
+        break;
       case 'player':
         // Attacking is LMB (see tryMeleeAttack); E on a person does nothing.
         break;
@@ -1910,6 +2235,17 @@ export class Game {
         this.quests.progress({ type: 'gather', target: outcome.itemId, count: outcome.granted }),
       );
     }
+    // The four elements (systems/elements.ts): every kind of nature carries
+    // one, and the crater's rocks pay the best — if you dare mine there.
+    const el = rollElementDrop(node.kind, node.x, node.z, Math.random);
+    if (el) {
+      const elLeft = this.inventory.add(el.itemId, el.count);
+      const elGot = el.count - elLeft;
+      if (elGot > 0) {
+        this.hud.toast(`element! +${elGot} ${ITEMS[el.itemId].name}`);
+        this.settleQuests(this.quests.progress({ type: 'gather', target: el.itemId, count: elGot }));
+      }
+    }
     const remaining = this.world.damageNode(node.id, 1);
     if (remaining <= 0) {
       this.floraRefresh();
@@ -1927,6 +2263,9 @@ export class Game {
     if (amount <= 0) return;
     const report = this.progress.addXp(amount);
     if (report.levelsGained <= 0) return;
+    // Every level pays one talentpunt (systems/perks.ts) — the XP tree is
+    // how a player SPENDS what the world taught them.
+    const gained = grantPerkPoints(this.perks, report.levelsGained);
     const unlocks = report.unlocked.map((id) => Crafting.recipeName(id));
     if (report.reachedMax) {
       this.hud.toast(`Max level ${MAX_LEVEL} bereikt!`);
@@ -1935,6 +2274,11 @@ export class Game {
         unlocks.length
           ? `Nieuw level ${this.progress.level}! Ontgrendeld: ${unlocks.join(', ')}`
           : `Nieuw level ${this.progress.level}!`,
+      );
+    }
+    if (gained > 0) {
+      this.hud.toast(
+        `+${gained} talentpunt${gained === 1 ? '' : 'en'} — druk K om je talenten te kiezen (${this.perks.points} te vergeven)`,
       );
     }
     this.refreshHud(true);
@@ -2066,8 +2410,13 @@ export class Game {
     // immunity window (validIncomingHit gates on lastHitTakenAt).
     this.swiftT = 0;
     this.nightT = 0;
+    this.fireT = 0;
+    this.strengthT = 0;
+    this.toughT = 0;
     this.lastHitTakenAt = this.combatT;
     if (this.shopOpen) this.setShopOpen(false);
+    if (this.perkOpen) this.setPerkOpen(false);
+    if (this.negoOpen) this.setNegoOpen(false);
     this.hud.setProgress(null);
     this.hud.setSleepFade(0);
     this.stats.respawn();
@@ -2134,7 +2483,7 @@ export class Game {
     for (const b of this.world.buildings) {
       if (!isPlanter(b)) continue;
       const before = growthOf(b);
-      const after = growPlanter(b, dt, this.localId, this.controller.pos);
+      const after = growPlanter(b, dt * farmGrowthMul(this.perks), this.localId, this.controller.pos);
       if (before < PLANTER_SECONDS && after >= PLANTER_SECONDS && !this.planterRipe.has(b.id)) {
         this.planterRipe.add(b.id);
         this.hud.toast(`De bessen in je bloempot zijn rijp — E om te plukken`);
@@ -2279,6 +2628,17 @@ export class Game {
         .filter((b) => isBlocking(b.kind, !!b.open))
         .map(wallSegment);
       const platforms: Platform[] = this.world.buildings.flatMap(buildingPlatforms);
+      // The witch's tower: pre-computed shell/floors/stairs in exactly the
+      // same structs as a player-built house — the controller walks it up
+      // without knowing anything new happened.
+      walls.push(...this.towerWallData);
+      platforms.push(...this.towerPlatformData);
+      // The crossing and the village on the far side: the bridge deck is a
+      // row of collinear platforms (so you walk across, not climb), the rails
+      // are walls, and every cottage wall is a wall segment with a real
+      // doorway you can walk through. Same structs, no new physics.
+      walls.push(...this.isleBridge.rails, ...this.villageWallData);
+      platforms.push(...this.isleBridge.decks, ...this.villageFloorData);
       this.controller.crouching = this.input.crouch;
       this.controller.update(
         dt,
@@ -2296,7 +2656,7 @@ export class Game {
       // Fall damage is local per player; no MP protocol change needed.
       const impact = this.controller.consumeImpact();
       if (impact) {
-        const raw = computeFallDamage(impact.distance, impact.crouching);
+        const raw = computeFallDamage(impact.distance, impact.crouching) * fallDamageMul(this.perks);
         // A raised shield eats half of a hard landing (and pays wear for it).
         const fall = this.absorb(raw);
         if (fall > 0) {
@@ -2359,8 +2719,16 @@ export class Game {
       this.combatT += dt;
       if (this.swiftT > 0) this.swiftT = Math.max(0, this.swiftT - dt);
       if (this.nightT > 0) this.nightT = Math.max(0, this.nightT - dt);
+      if (this.fireT > 0) this.fireT = Math.max(0, this.fireT - dt);
+      if (this.strengthT > 0) this.strengthT = Math.max(0, this.strengthT - dt);
+      if (this.toughT > 0) this.toughT = Math.max(0, this.toughT - dt);
       if (this.swingT > 0) this.swingT = Math.max(0, this.swingT - dt);
-      this.controller.speedScale = this.swiftT > 0 ? SWIFT_SPEED_MULTIPLIER : 1;
+      this.controller.speedScale = (this.swiftT > 0 ? SWIFT_SPEED_MULTIPLIER : 1) * moveSpeedMul(this.perks);
+      // Passive perk plumbing: the two effects that live INSIDE other
+      // objects are re-applied every frame, so buying (or loading) a perk
+      // takes effect without any special moment.
+      this.stats.staminaDrainScale = staminaDrainMul(this.perks);
+      if (this.witch) this.witch.moodDecayScale = witchDecayMul(this.perks);
       if (this.nightLight) {
         this.nightLight.intensity =
           this.nightT > 0 ? Math.min(1, Math.min(this.nightT, 2) / 2) * 1.2 : 0;
@@ -2401,6 +2769,7 @@ export class Game {
         // those are ignored; the bag key and the close key still work. B also
         // stays closed while the panel is open (one Esc closes one layer).
         if (!this.invOpen && this.input.consumePress('interact')) this.handleEPress(pick?.target ?? null);
+        if (!this.invOpen && this.input.consumePress('negotiate')) this.tryNegotiate(pick?.target ?? null);
         if (!this.invOpen && this.input.consumePress('craft')) {
           this.craftingOpen = !this.craftingOpen;
           this.refreshHud(true);
@@ -2430,6 +2799,13 @@ export class Game {
         }
         if (this.settingsOpen && this.input.consumePress('close')) {
           this.setSettingsOpen(false);
+        }
+        // The perk tree (Talenten): one point per level, three branches.
+        if (this.input.consumePress('perks')) {
+          this.setPerkOpen(!this.perkOpen);
+        }
+        if (this.perkOpen && this.input.consumePress('close')) {
+          this.setPerkOpen(false);
         }
         // Hotbar: the eight slot keys are one group (rebindable per slot).
         const slot = this.input.consumeSlotPress();
@@ -2470,6 +2846,7 @@ export class Game {
         if (this.invOpen) this.closeInventory();
         this.hud.showDeath(true);
         this.closeChat();
+        if (this.negoOpen) this.setNegoOpen(false);
       }
       }
     }
@@ -2486,7 +2863,7 @@ export class Game {
     this.syncFloraShadowCasters(this.camera.position.x, this.camera.position.z);
     this.updateNpcs(dt);
     this.updateAnimals(dt);
-    this.witchTick?.(dt, this.combatT);
+    this.landmarkTick(dt);
     this.updateRemotes(dt);
     this.updateFps(rawDt);
     this.syncBuildingShadows();
@@ -2498,6 +2875,7 @@ export class Game {
         this.controller.pos.y,
         this.controller.pos.z,
         this.charYaw,
+        this.selectedItemId() ?? '',
       );
       // Progress relay needs no extra timer: the 15 s autosave tick calls
       // persist(), which uploads a snapshot here instead of writing
@@ -2539,9 +2917,11 @@ export class Game {
           text = node ? `Houd F — ${KIND_LABEL[node.kind] ?? node.kind} oogsten` : null;
           break;
         }
-        case 'npc':
-          text = 'Druk E — Gesprek';
+        case 'npc': {
+          const n = this.npcs.find((x) => x.profile.id === t.id);
+          text = n && isVendor(n.profile.id) ? 'Druk E — Gesprek · N — Onderhandelen' : 'Druk E — Gesprek';
           break;
+        }
         case 'campfire': {
           const b = this.world.buildings.find((x) => x.id === t.id);
           const fuel = b?.fuel ?? 0;
@@ -2607,7 +2987,19 @@ export class Game {
           break;
         }
         case 'witch':
-          text = 'Druk E — Ruilen met de heks (drankjes)';
+          text =
+            this.witch && this.witch.hostile
+              ? 'De heks is BOOS — E: afkoelen met goud, of REN'
+              : 'Druk E — Ruilen met de heks · N — Praten';
+          break;
+        case 'chest': {
+          const entry = this.landmarkChests.find((c) => c.def.id === t.id);
+          const opened = entry ? this.chestsState.opened.has(t.id) : false;
+          text = opened ? 'De kist is leeg — het goud is al van jou' : `Druk E — ${entry?.def.label ?? 'Kist'} openen`;
+          break;
+        }
+        case 'spider':
+          text = 'LMB — De spin verslaan (silk als buit)';
           break;
         case 'player':
           text = 'LMB — Aanvallen';
@@ -2639,6 +3031,27 @@ export class Game {
         } else if (itemId === 'potion_night') {
           this.nightT = buff;
           this.hud.toast('Drankje werkt — het donker kan je nu niets schelen (120s)');
+        } else if (itemId === 'potion_fire') {
+          this.fireT = buff;
+          this.hud.toast('Drankje werkt — de lava zal prikken als een lauwe douche (120s)');
+        } else if (itemId === 'potion_strength') {
+          this.strengthT = buff;
+          this.hud.toast('Drankje werkt — je slagen en pijlen treffen dubbel zo hard (90s)');
+        } else if (itemId === 'potion_tough') {
+          this.toughT = buff;
+          this.hud.toast('Drankje werkt — je huid voelt als eikenhout (90s)');
+        } else if (itemId === 'element_fire') {
+          this.fireT = Math.max(this.fireT, buff);
+          this.hud.toast('Vuurpoeder brandt door — 20s lava-immuun');
+        } else if (itemId === 'element_water') {
+          this.nightT = Math.max(this.nightT, buff);
+          this.hud.toast('Waterdauw heldert je blik — 20s nachtzicht');
+        } else if (itemId === 'element_air') {
+          this.swiftT = Math.max(this.swiftT, buff);
+          this.hud.toast('Luchtveder verlicht je stappen — 20s sneller');
+        } else if (itemId === 'element_earth') {
+          this.toughT = Math.max(this.toughT, buff);
+          this.hud.toast('Aardekloot aardt je in — 20s houtenhuid');
         }
       }
       this.hud.toast(result.message);
@@ -2816,6 +3229,30 @@ export class Game {
         break;
       }
     }
+    // Volcano den spiders (ai/spiders.ts + world/volcano.ts): five guards on
+    // the bowl floor and in the trench. Like the herd these are local per
+    // client; the den is hostile territory.
+    {
+      let seq = 0;
+      for (const lair of volcanoSpiders()) {
+        seq++;
+        const spider = new Spider(
+          this.scene,
+          lair.id,
+          {
+            x: lair.x,
+            z: lair.z,
+            floorY: groundSurfaceHeight(lair.x, lair.z),
+            leash: lair.leash,
+            kind: 'court',
+          },
+          (WORLD_SEED ^ (seq * 7919 + 0x51de)) >>> 0,
+          (x, z) => groundSurfaceHeight(x, z),
+        );
+        for (const m of spider.shadowMeshes) this.lighting.addShadowCaster(m);
+        this.landmarkSpiders.push(spider);
+      }
+    }
   }
 
   private updateAnimals(dt: number): void {
@@ -2917,7 +3354,7 @@ export class Game {
     if (!inSwingRange(Math.hypot(target.x - p.x, target.z - p.z))) return;
     const sel = this.selectedItemId();
     if (target.kind === 'animal') {
-      const dmg = animalMeleeDamage(sel);
+      const dmg = this.perkDamage(withStrength(animalMeleeDamage(sel), this.strengthT > 0));
       if (dmg <= 0) return; // F remains the unarmed way to hunt
       const animal = this.animals.find((a) => a.id === target.id && a.alive);
       if (!animal) return;
@@ -2933,6 +3370,42 @@ export class Game {
         return;
       }
       this.finishAnimalKill(animal);
+    } else if (target.kind === 'spider') {
+      // The den spiders do not flee — they hold their court, and the only
+      // negotiation they accept is the one with a sword (ai/spiders.ts).
+      const dmg = this.perkDamage(withStrength(spiderMeleeDamage(sel), this.strengthT > 0));
+      const spider = this.landmarkSpiders.find((s) => s.id === target.id && s.alive);
+      if (!spider) return;
+      this.lastSwingAt = this.combatT;
+      this.beginSwing();
+      let died = false;
+      for (let i = 0; i < dmg; i++) {
+        died = spider.damage(1);
+        if (died) break;
+      }
+      if (!died) {
+        this.hud.toast('De spin sissend — hij deinst terug, maar wijkt geen stap');
+        return;
+      }
+      this.finishSpiderKill(spider);
+    } else if (target.kind === 'witch') {
+      // Steel on a witch: it passes through her like cold damp and makes
+      // the mood WORSE (systems/witch.ts). She cannot be killed — a full
+      // pounding only makes her blink away in smoke and return whole,
+      // still furious, minutes later.
+      const w = this.witch;
+      if (!w || !w.present) return;
+      this.lastSwingAt = this.combatT;
+      this.beginSwing();
+      const before = w.hostile;
+      const vanished = w.fight(withStrength(spiderMeleeDamage(sel), this.strengthT > 0), this.combatT) === 'vanished';
+      if (vanished) {
+        this.hud.toast('Met een KNAL zwarte rook is ze weg — en de torendeur staat nog open...');
+      } else if (!before && w.hostile) {
+        this.hud.toast('De heks staat in vuur en vlam — ZE ACHTERVOLGT JE');
+      } else {
+        this.hud.toast('Het zwaard gaat door haar heen als door koude damp — en ze wordt niet vrolijker');
+      }
     } else if (target.kind === 'player') {
       this.lastSwingAt = this.combatT;
       this.beginSwing();
@@ -2954,8 +3427,17 @@ export class Game {
   private tryShoot(target: InteractTarget | null): void {
     if (!canShoot(this.combatT, this.lastShotAt)) return;
     const sel = this.selectedItemId();
-    const dmg = animalRangedDamage(sel);
-    if (dmg <= 0 || !target || target.kind !== 'animal') return;
+    const dmg = this.perkDamage(withStrength(animalRangedDamage(sel), this.strengthT > 0));
+    if (dmg <= 0 || !target) return;
+    if (target.kind === 'spider') {
+      this.tryShootSpider(target, dmg);
+      return;
+    }
+    if (target.kind === 'witch') {
+      this.tryShootWitch(target, dmg);
+      return;
+    }
+    if (target.kind !== 'animal') return;
     const p = this.controller.pos;
     if (!inBowRange(Math.hypot(target.x - p.x, target.z - p.z))) return;
     const animal = this.animals.find((a) => a.id === target.id && a.alive);
@@ -2987,6 +3469,59 @@ export class Game {
   }
 
   /**
+   * An arrow into a den spider. Same honest cost as hunting: one arrow and
+   * one draw of bow wear — spiders are armoured in chitin, so expect more
+   * than one shot (SPIDER_HITS in systems/combat.ts).
+   */
+  private tryShootSpider(target: InteractTarget, dmg: number): void {
+    if (target.kind !== 'spider') return;
+    const p = this.controller.pos;
+    if (!inBowRange(Math.hypot(target.x - p.x, target.z - p.z))) return;
+    const spider = this.landmarkSpiders.find((s) => s.id === target.id && s.alive);
+    if (!spider) return;
+    if (this.inventory.count(ARROW_AMMO) <= 0) {
+      this.hud.toast('Geen pijlen meer — maak nieuwe (B → Pijl)');
+      this.lastShotAt = this.combatT;
+      return;
+    }
+    this.lastShotAt = this.combatT;
+    this.inventory.remove(ARROW_AMMO, 1);
+    const wear = wearTool(this.inventory, this.inventory.selected, SHOOT_ANIM_TIME);
+    if (wear.broke) this.hud.toast('Je boog is uit elkaar geklapt!');
+    if (!spider.damage(dmg)) {
+      this.hud.toast('De pijl botst op de chitinpantsers — de spin raakt woedend');
+      return;
+    }
+    this.finishSpiderKill(spider);
+  }
+
+  /**
+   * An arrow at the witch. Same honest cost as everything else that misses
+   * on purpose: she is not an enemy to defeat but a shopkeeper to keep on
+   * the right side of — one arrow adds 34 anger and costs one arrow.
+   */
+  private tryShootWitch(target: InteractTarget, dmg: number): void {
+    const w = this.witch;
+    if (!w || !w.present) return;
+    const p = this.controller.pos;
+    if (!inBowRange(Math.hypot(target.x - p.x, target.z - p.z))) return;
+    if (this.inventory.count(ARROW_AMMO) <= 0) {
+      this.hud.toast('Geen pijlen meer — maak nieuwe (B → Pijl)');
+      this.lastShotAt = this.combatT;
+      return;
+    }
+    this.lastShotAt = this.combatT;
+    this.inventory.remove(ARROW_AMMO, 1);
+    const wear = wearTool(this.inventory, this.inventory.selected, SHOOT_ANIM_TIME);
+    if (wear.broke) this.hud.toast('Je boog is uit elkaar geklapt!');
+    const before = w.hostile;
+    const vanished = w.fight(Math.max(1, dmg), this.combatT) === 'vanished';
+    if (vanished) this.hud.toast('De pijl gaat door haar heen — ze verdwijnt in zwarte rook');
+    else if (!before && w.hostile) this.hud.toast('De heks staat in vuur en vlam — ZE ACHTERVOLGT JE');
+    else this.hud.toast('De pijl gaat door de heks als door rook. Ze grijnst niet');
+  }
+
+  /**
    * Start the slash animation and pay the swing's tool wear (one swing
    * animation of `wearPerSec` — the sword outlives ~200 strikes, then
    * shatters like any other tool).
@@ -3009,32 +3544,396 @@ export class Game {
     }
   }
 
+  // --- Negotiation table (systems/negotiation.ts) --------------------------
+
+  /** N (rebindable) at a village trader: open or close the haggle table. */
+  private tryNegotiate(target: InteractTarget | null): void {
+    if (this.negoOpen) {
+      this.setNegoOpen(false);
+      return;
+    }
+    // The witch invented the haggle, but she does not haggle: N at her door
+    // starts a CONVERSATION (the same LLM pipeline the villagers use —
+    // she is a full NPC, just a rude one).
+    if (target && target.kind === 'witch' && this.witch) {
+      if (!this.witch.present) return;
+      if (this.witch.hostile) {
+        this.hud.toast('Ze heeft geen woorden meer over — alleen handen vol vonken');
+        return;
+      }
+      this.openChat(this.witch);
+      return;
+    }
+    if (!target || target.kind !== 'npc') {
+      this.hud.toast('Loop naar een dorpeling toe en druk dan N');
+      return;
+    }
+    const npc = this.npcs.find((n) => n.profile.id === target.id);
+    if (!npc) return;
+    if (!isVendor(npc.profile.id)) {
+      this.hud.toast(`Met ${npc.profile.name} is niet te underhandelen — praten kan altijd (E)`);
+      return;
+    }
+    const rel = this.conversations.get(npc.profile.id)?.relationship ?? 0;
+    this.negoCounter += 1;
+    const rng = mulberry32((WORLD_SEED ^ (this.negoCounter * 0x9e3779b1)) >>> 0);
+    this.nego = { session: openSession(npc.profile.id, npc.profile.name, rel, rng) };
+    this.negoDeals = 0;
+    this.setNegoOpen(true);
+  }
+
+  private setNegoOpen(open: boolean): void {
+    if (open && !this.nego) return;
+    this.negoOpen = open;
+    if (open) {
+      this.refreshNego();
+      try {
+        document.exitPointerLock?.();
+      } catch {
+        /* not locked, nothing to release */
+      }
+      return;
+    }
+    if (this.nego) {
+      // Walking away from the table gets a closing remark — and a finished
+      // deal warms the trader for the next session (relationship aside).
+      this.hud.toast(dealWrap(this.nego.session, this.negoDeals > 0));
+      this.nego = null;
+    }
+    this.hud.setNegotiate(false, '', []);
+  }
+
+  /** Draw the session as it stands now (asks, bids, remarks, wallet). */
+  private refreshNego(): void {
+    const s = this.nego?.session;
+    if (!s) return;
+    const gold = this.inventory.count(GOLD);
+    const rows = s.lines.map((l) => ({
+      id: l.id,
+      label: `${l.qty}× ${(ITEMS[l.goods]?.name ?? l.goods).toLowerCase()}`,
+      askText: l.side === 'sell' ? `vraagt ${l.ask} goud` : `biedt ${l.ask} goud`,
+      say: l.say,
+      bid: l.bid,
+      bidText: l.side === 'sell' ? `jouw bod ${l.bid}` : `jouw eis ${l.bid}`,
+      canHaggle: l.open,
+      canDeal:
+        l.open &&
+        (l.side === 'sell' ? gold >= l.ask : this.inventory.count(l.goods) >= l.qty && s.wealth >= 1),
+      dealLabel: l.side === 'sell' ? `Kopen (${l.ask}g)` : `Verkopen (${l.ask}g)`,
+    }));
+    const humeur = s.mood >= 75 ? 'goedgezind' : s.mood >= 45 ? 'zakelijk' : 'korrelig';
+    this.hud.setNegotiate(
+      true,
+      `ONDERHANDELEN met ${s.npcName} — goud in zak: ${gold} · humeur: ${humeur}`,
+      rows,
+    );
+  }
+
+  /** ± on a row: nudge your counter-offer one step (≈ 8% of the ask). */
+  private doNegoBid(id: string, delta: number): void {
+    const line = this.nego?.session.lines.find((l) => l.id === id);
+    if (!line || !line.open) return;
+    const step = Math.max(1, Math.round(line.ask * 0.08));
+    line.bid = Math.max(1, Math.min(999, line.bid + delta * step));
+    this.refreshNego();
+  }
+
+  /** Put the current bid on the table: one haggle round (pure rules). */
+  private doNegoHaggle(lineId: string): void {
+    const s = this.nego?.session;
+    if (!s) return;
+    const line = s.lines.find((l) => l.id === lineId);
+    if (!line) return;
+    const res = haggle(s, lineId, line.bid, Math.random);
+    line.say = res.say;
+    if (res.insulted) this.hud.toast(`${s.npcName} trekt een lang gezicht — dat viel niet in de smaak`);
+    if (res.deal !== null && res.deal !== undefined) {
+      // They accepted the offer: close at the accepted figure immediately.
+      line.ask = res.deal;
+      this.doNegoDeal(lineId);
+      return;
+    }
+    this.refreshNego();
+  }
+
+  /** Accept the villager's current figure — coins and goods change hands. */
+  private doNegoDeal(lineId: string): void {
+    const s = this.nego?.session;
+    if (!s) return;
+    const r = closeDeal(s, lineId, this.inventory);
+    if (!r.ok) {
+      this.hud.toast(r.say);
+      this.refreshNego();
+      return;
+    }
+    this.negoDeals += 1;
+    const name = (ITEMS[r.goods]?.name ?? r.goods).toLowerCase();
+    this.hud.toast(`Verhandeld: ${r.qty}× ${name} voor ${r.price} goud — ${r.say}`);
+    this.grantXp(2);
+    this.refreshHud(true);
+    this.refreshNego();
+    this.persist();
+  }
+
+  // --- The volcano: De Slak van As (world/volcano.ts) -----------------------
+
   /**
-   * The witch's cottage: hut + figure on a scanned flat pad, facing the
-   * NPC camp so players walking over see the door and the cauldron.
+   * Dress the volcano: the lava lake is carved terrain (heightfield.ts),
+   * so this only adds the emissive disc, the vent and the flickering light
+   * — the same trick as the cave ceiling plugs — plus the strongboxes.
+   */
+  private buildVolcanoSite(): void {
+    const fx = buildVolcanoShrine(this.scene, volcanoLake(), VENT, (x, z) => groundSurfaceHeight(x, z));
+    this.volcanoFx = fx;
+    this.decor.push({ meshes: [], dispose: () => fx.dispose() });
+    for (const c of volcanoChests()) {
+      const decor = buildChest(this.scene, c, this.chestsState.opened.has(c.id));
+      decor.root.position.y = groundSurfaceHeight(c.x, c.z) - 0.03;
+      this.landmarkChests.push({ def: c, decor, y: null });
+    }
+  }
+
+  // --- Het eildorp: De Brug en het dorp (world/villageIsle.ts) ---------------
+
+  /**
+   * The second island, built on top of the terrain delta that made it:
+   *  - the bridge and the village, drawn from the SAME structs the controller
+   *    collides with (`isleBridge`, `villageWallData`), so the doorway you see
+   *    is the doorway you can walk through;
+   *  - the three islanders, ordinary `Npc`s with their own home spot as wander
+   *    anchor — conversation, memory and save slot included.
+   */
+  private buildVillageSite(): void {
+    const { decor, shadowMeshes } = buildVillageVisual(this.scene, this.mats, this.isleBridge);
+    this.decor.push(decor);
+    for (const m of shadowMeshes) this.lighting.addShadowCaster(m);
+    VILLAGER_PROFILES.forEach((profile, i) => {
+      const home = villagerSpawn(VILLAGERS[i]);
+      // Each islander has their own walking radius: the village is 40 m across
+      // and the harbour beach ends 20 m out, so the camp's route would have
+      // Sien swimming.
+      const npc = new Npc(this.scene, profile, home, (WORLD_SEED ^ (0x515e + i * 977)) >>> 0, this.mats, {
+        ring: VILLAGERS[i].ring,
+      });
+      this.npcs.push(npc);
+      for (const m of npc.root.getChildMeshes(false)) this.lighting.addShadowCaster(m);
+    });
+  }
+
+  /** E at a strongbox: the gold is systems/chests.ts pure rules. */
+  private openLandmarkChest(id: string): void {
+    const entry = this.landmarkChests.find((c) => c.def.id === id);
+    if (!entry) return;
+    const res = openChest(this.chestsState, id, entry.def.tier, Math.random);
+    if (!res) return; // already emptied — the prompt says so, no toast spam
+    entry.decor.setOpen(true);
+    const left = this.inventory.add(GOLD, res.gold);
+    const fitted = res.gold - left;
+    const bits = [
+      `${fitted} goudstuk${fitted === 1 ? '' : 'en'} in je zak!` +
+        (left > 0 ? ` (${left} past niet in je rugzak)` : ''),
+    ];
+    // Tower chests hide a sprig of the witch's own herb in the straw —
+    // the seed of the player's salve craft (core/items.ts recipe_salve).
+    const bonus = CHEST_HERB_BONUS[id];
+    if (bonus) {
+      const n = bonus[0] + Math.floor(Math.random() * (bonus[1] - bonus[0] + 1));
+      const herbLeft = this.inventory.add('herb', n);
+      if (n - herbLeft > 0) bits.push(`${n - herbLeft}× torenkruid tussen het stro`);
+    }
+    // HER strongbox, on her doorstep, while she is home: no words fix this.
+    if (id === 'chest_tower_top' && this.witch && this.witch.present && !this.witch.hostile) {
+      const flips = angerWitch(this.witch.state, WITCH_ANGER.STEAL * witchAngerMul(this.perks));
+      bits.push('Boven in de toren klinkt een gil — „MIJN STERKBAK!”');
+      if (flips) this.hud.toast('De heks komt naar beneden. REN.');
+    } else if (id === 'chest_tower_top' && this.witch && this.witch.present) {
+      angerWitch(this.witch.state, WITCH_ANGER.STEAL * witchAngerMul(this.perks));
+    }
+    this.hud.toast(`${entry.def.label} open — ${bits.join(' + ')}`);
+    this.grantXp(entry.def.tier === 'great' ? 15 : 6);
+    this.refreshHud(true);
+    this.persist();
+  }
+
+  /** Loot table for one dead den spider (rolled here, in the game). */
+  private finishSpiderKill(spider: Spider): void {
+    this.deadSpiderIds.add(spider.id);
+    const silk = SPIDER_SILK_DROP[0] + Math.floor(Math.random() * (SPIDER_SILK_DROP[1] - SPIDER_SILK_DROP[0] + 1));
+    const left = this.inventory.add('silk', silk);
+    const fitted = silk - left;
+    const bits: string[] = [];
+    if (fitted > 0) {
+      bits.push(`${fitted}× Spinrag`);
+      this.settleQuests(this.quests.progress({ type: 'gather', target: 'silk', count: fitted }));
+    }
+    if (Math.random() < SPIDER_COIN_CHANCE) {
+      const [lo, hi] = SPIDER_COIN_RANGE;
+      const coins = lo + Math.floor(Math.random() * (hi - lo + 1));
+      const coinLeft = this.inventory.add(GOLD, coins);
+      if (coins - coinLeft > 0) bits.push(`${coins - coinLeft} goud`);
+    }
+    if (Math.random() < SPIDER_HERB_CHANCE) {
+      const [lo, hi] = SPIDER_HERB_RANGE;
+      const herbs = lo + Math.floor(Math.random() * (hi - lo + 1));
+      const herbLeft = this.inventory.add('herb', herbs);
+      if (herbs - herbLeft > 0) bits.push(`${herbs - herbLeft}× torenkruid`);
+    }
+    this.hud.toast(`De spin is neergeslagen — ${bits.join(' en ') || 'niets meegekregen'}`);
+    this.grantXp(XP_SOURCE.kill);
+    this.refreshHud(true);
+    this.persist();
+  }
+
+  /**
+   * Per-frame landmark logic: lava shimmer, chest lids, the den AND
+   * tower spiders' bite and collapse, the witch's mood and chase, and
+   * the lake itself — standing in molten rock is the fastest way to die in
+   * this world (unless you drank her Vuurdrank).
+   */
+  private landmarkTick(dt: number): void {
+    this.volcanoFx?.update(dt, this.combatT);
+    for (const c of this.landmarkChests) c.decor.tick(dt);
+    const p = this.controller.pos;
+    // Spiders only move when their OWN landmark is awake: a dead spider
+    // half a continent away must not twitch, and a tower guard may not
+    // patrol forever while the player never visits.
+    const near = volcanoIsNear(p.x, p.z, 96) || towerIsNear(this.tower, p.x, p.z, 96);
+    const frozen =
+      this.stats.dead || !!this.sleep || this.invOpen || this.negoOpen || this.shopOpen || this.perkOpen || this.activeNpc !== null;
+    for (let i = this.landmarkSpiders.length - 1; i >= 0; i--) {
+      const s = this.landmarkSpiders[i];
+      const bitten = s.update(dt, p.x, p.y, p.z, this.combatT, frozen || !near);
+      if (s.gone) {
+        for (const m of s.shadowMeshes) this.lighting.removeShadowCaster(m);
+        s.dispose();
+        this.landmarkSpiders.splice(i, 1);
+        continue;
+      }
+      if (bitten) {
+        const raw = this.absorb(SPIDER_BITE_DAMAGE);
+        if (raw > 0) {
+          this.stats.takeDamage(raw);
+          this.hurtT = 1;
+          this.hud.toast(`De spin bijt je! (−${Math.round(raw)} gezondheid)`);
+        }
+      }
+    }
+    // The witch: mood physics, the chase and the hex-hand (systems/witch.ts
+    // decides EVERYTHING — this is only the plumbing and the damage).
+    if (this.witch) {
+      const hit = this.witch.tick(dt, p.x, p.y, p.z, this.combatT, frozen);
+      if (hit) {
+        const raw = this.absorb(WITCH_HIT_DAMAGE);
+        if (raw > 0) {
+          this.stats.takeDamage(raw);
+          this.hurtT = 1;
+          this.hud.toast(`De heks raakt je met een gloeiende hand! (−${Math.round(raw)} gezondheid)`);
+        }
+      }
+    }
+    // The lava lake: a steady cook while you stand in it.
+    if (!this.stats.dead && inCraterLava(p.x, p.z)) {
+      this.lavaBurnT += dt;
+      if (this.lavaBurnT >= 0.5) {
+        this.lavaBurnT = 0;
+        if (this.fireT > 0) {
+          // Vuurdrank: the honest form of immunity is a visible one.
+          this.hud.toast('De Vuurdrank houdt stand — de lava likt je alleen maar');
+        } else {
+          const raw = this.absorb(11);
+          if (raw > 0) {
+            this.stats.takeDamage(raw);
+            this.hurtT = 1;
+            this.hud.toast(
+              this.lavaWarned ? `De lava verteert je! (−${Math.round(raw)})` : 'DE LAVA! Weg — dit oppervlak is gesmolten berg!',
+            );
+            this.lavaWarned = true;
+          }
+        }
+      }
+    } else {
+      this.lavaBurnT = 0;
+    }
+    // One lore line the first time you get close to the mountain.
+    if (!this.volcanoAnnounced && volcanoIsNear(p.x, p.z, 130)) {
+      this.volcanoAnnounced = true;
+      this.hud.toast(`${VOLCANO_NAME} — rook boven de bomen, en de grond wordt heter onder je voeten...`);
+    }
+    if (!this.towerAnnounced && towerIsNear(this.tower, p.x, p.z, 140)) {
+      this.towerAnnounced = true;
+      this.hud.toast('De heksentoren — een naald van steen met een scheve punthoed. Rook kronkelt om de deur, en dahinter klinkt geborrel.');
+    }
+    // And the first time the second island shows itself across the strait.
+    if (!this.villageAnnounced && isleDist(p.x, p.z) < ISLE_APPROACH) {
+      this.villageAnnounced = true;
+      this.hud.toast(
+        'Over het water: een tweede eiland, met rook boven de daken. Een brug van balken op steen ligt voor je.',
+      );
+    }
+  }
+
+  /**
+   * The witch's OLD cottage — she moved to the tower, and the hut stays as
+   * the lore breadcrumb: empty, cold hearth, a scorch mark pointing east.
+   * (The interactive witch lives at world/tower.ts — see buildTowerSite.)
    */
   private buildWitchSite(): void {
     const gy = groundHeight(WITCH_HOME.x, WITCH_HOME.z);
     const { root, decor } = buildWitchHut(this.scene, this.mats);
     root.position.set(WITCH_HOME.x, gy - 0.12, WITCH_HOME.z);
-    root.rotation.y = Math.atan2(this.camp.x - WITCH_HOME.x, this.camp.z - WITCH_HOME.z);
+    root.rotation.y = Math.atan2(this.tower.x - WITCH_HOME.x, this.tower.z - WITCH_HOME.z);
     this.decor.push(decor);
+  }
 
-    const witch = buildWitch(this.scene);
-    // Standing at the cauldron (local offset, rotated with the hut).
-    const cos = Math.cos(root.rotation.y);
-    const sin = Math.sin(root.rotation.y);
-    const lx = 3.1;
-    const lz = 3.9;
-    witch.root.position.set(
-      WITCH_HOME.x + lx * cos + lz * sin,
-      gy,
-      WITCH_HOME.z - lx * sin + lz * cos,
-    );
-    witch.root.rotation.y = root.rotation.y + Math.PI; // face her cauldron
-    this.witchRoot = witch.root;
-    this.witchTick = witch.update;
-    this.witchAt.set(witch.root.position.x, gy + 1.1, witch.root.position.z);
+  /**
+   * The witch's tower: visuals from the SAME structs the controller
+   * collides with (fields `towerWallData`/`towerPlatformData`), her chest
+   * garrison in the shared landmark list, the tower spiders in the shared
+   * spider list, and the witch herself — an NPC who trades, talks and
+   * hexes — patrolling the ring outside her door.
+   */
+  private buildTowerSite(): void {
+    const site = this.tower;
+    const { decor, shadowMeshes } = buildTowerVisual(this.scene, this.mats, site);
+    this.decor.push(decor);
+    for (const m of shadowMeshes) this.lighting.addShadowCaster(m);
+
+    // Chests. The top one is HER strongbox — opening it while she stands
+    // in the court is the theft that can never be talked away (systems/
+    // witch.ts STEAL).
+    for (const c of towerChests(site)) {
+      const decor = buildChest(this.scene, c, this.chestsState.opened.has(c.id));
+      decor.root.position.y = c.y - 0.03;
+      this.landmarkChests.push({ def: c, decor, y: c.y });
+    }
+
+    // The garrison: court ring on the terrain, one guard per floor (the
+    // floor slab is their world — they never leave it, see ai/spiders.ts).
+    let seq = 0;
+    for (const lair of towerSpiders(site)) {
+      seq++;
+      const spider = new Spider(
+        this.scene,
+        lair.id,
+        {
+          x: lair.x,
+          z: lair.z,
+          floorY: towerFloorAt(site, lair.floor),
+          leash: lair.leash,
+          kind: lair.floor === 0 ? 'court' : 'inside',
+        },
+        (WORLD_SEED ^ (seq * 6151 + 0x7a7a)) >>> 0,
+        (x, z) => groundSurfaceHeight(x, z),
+      );
+      for (const m of spider.shadowMeshes) this.lighting.addShadowCaster(m);
+      this.landmarkSpiders.push(spider);
+    }
+
+    // The witch.
+    this.witch = new Witch(this.scene, WITCH_PROFILE, site, (WORLD_SEED ^ 0xdead) >>> 0, this.mats);
+    for (const m of this.witch.root.getChildMeshes(false)) {
+      if (m instanceof Mesh) this.lighting.addShadowCaster(m);
+    }
   }
 
   /** Open/close the witch's barter panel (releases the pointer lock). */
@@ -3051,16 +3950,43 @@ export class Game {
   }
 
   private shopRows(): Array<{ id: string; name: string; price: string; afford: boolean }> {
-    return SHOP_OFFERS.map((o) => ({
+    const rows = this.pricedOffers().map((o) => ({
       id: o.id,
       name: ITEMS[o.gives].name,
       price: priceLabel(o, (id) => (ITEMS[id]?.name ?? id).toLowerCase()),
       afford: offerAffordable(this.inventory, o),
     }));
+    // The peace offering: as long as she is angry, the last row of her
+    // shelf is a price list for her pride (systems/witch.ts APPEASE_COST).
+    if (this.witch && this.witch.state.anger > 0) {
+      rows.push({
+        id: 'appease',
+        name: this.witch.hostile ? 'Verontschuldig je (ze kokkelrijpt van woede)' : 'Verontschuldig je (ze is geprikkeld)',
+        price: `${APPEASE_COST} goud`,
+        afford: this.inventory.count(GOLD) >= APPEASE_COST,
+      });
+    }
+    return rows;
   }
 
   private doTrade(offerId: string): void {
-    const offer = SHOP_OFFERS.find((o) => o.id === offerId);
+    if (offerId === 'appease') {
+      const w = this.witch;
+      if (!w) return;
+      const gold = this.inventory.count(GOLD);
+      if (!w.apologize(gold)) {
+        this.hud.toast(`Te weinig goud — een heks kost ${APPEASE_COST} goud om beleefd te worden`);
+        return;
+      }
+      this.inventory.remove(GOLD, APPEASE_COST);
+      this.conversations.get(WITCH_PROFILE.id)?.addMemory('De speler heeft zich formeel verontschuldigd.');
+      this.hud.toast('Ze stopt het geld in haar mouw en knikt. „Afgesproken. Volgende?”');
+      this.hud.setShop(true, this.shopRows());
+      this.refreshHud(true);
+      this.persist();
+      return;
+    }
+    const offer = this.pricedOffers().find((o) => o.id === offerId);
     if (!offer) return;
     if (performTrade(this.inventory, offer)) {
       this.hud.toast(`Geruild: ${ITEMS[offer.gives].name}`);
@@ -3069,6 +3995,75 @@ export class Game {
     } else {
       this.hud.toast('Ruild niet — te weinig materiaal of te volle rugzak');
     }
+  }
+
+  private doBuyPerk(id: string): void {
+    const check = canBuy(this.perks, id);
+    if (!check.ok) {
+      this.hud.toast(check.reason);
+      return;
+    }
+    buyPerk(this.perks, id);
+    const def = PERKS.find((p) => p.id === id);
+    this.hud.toast(def ? `Talent gekozen: ${def.name} — ${def.desc}` : 'Talent gekozen');
+    this.hud.setPerks(true, this.perks.points, this.perkNodes());
+    this.persist();
+  }
+
+  /**
+   * The witch's shelf with the Scherpe-koop discount applied: prices are
+   * whole items, so the discount rounds to the nearest item but never
+   * below one — she does not give potions away for a single berry.
+   */
+  private pricedOffers(): ShopOffer[] {
+    const mul = shopPriceMul(this.perks);
+    if (mul === 1) return SHOP_OFFERS;
+    return SHOP_OFFERS.map((o) => ({
+      ...o,
+      cost: o.cost.map(([item, n]) => [item, Math.max(1, Math.round(n * mul))] as [string, number]),
+    }));
+  }
+
+  /** Krachtige slagen: damage numbers are whole hits, so the +25% rounds. */
+  private perkDamage(base: number): number {
+    if (base <= 0) return base;
+    return Math.max(base, Math.round(base * meleeDamageMul(this.perks)));
+  }
+
+  private setPerkOpen(open: boolean): void {
+    this.perkOpen = open;
+    this.hud.setPerks(open, this.perks.points, this.perkNodes());
+    if (open) {
+      try {
+        document.exitPointerLock?.();
+      } catch {
+        /* not locked, nothing to release */
+      }
+    }
+  }
+
+  /**
+   * The tree for the HUD: layout geometry from perks.ts plus a presentation
+   * state per node. canBuy owns the rules — this only names the state.
+   */
+  private perkNodes(): Array<{
+    id: string;
+    name: string;
+    desc: string;
+    parent: string | null;
+    x: number;
+    row: number;
+    state: 'buy' | 'owned' | 'locked' | 'poor';
+  }> {
+    return treeLayout().map((n) => {
+      let state: 'buy' | 'owned' | 'locked' | 'poor';
+      if (hasPerk(this.perks, n.id)) state = 'owned';
+      else {
+        const c = canBuy(this.perks, n.id);
+        state = c.ok ? 'buy' : c.reason === 'Te weinig talentpunten' ? 'poor' : 'locked';
+      }
+      return { ...n, row: n.y, state };
+    });
   }
 
   private updateRemotes(dt: number): void {
@@ -3082,7 +4077,77 @@ export class Game {
    * the HUD report ~20 fps even when the engine rendered at 1 fps.
    */
   private updateFps(rawDt: number): void {
-    if (this.fpsMeter.tick(rawDt)) this.hud.setFps(this.fpsMeter.fps);
+    if (this.fpsMeter.tick(rawDt)) {
+      this.hud.setFps(this.fpsMeter.fps);
+      // One completed fps window is also the adaptive quality's sample —
+      // but only while the player left it on auto. A chosen quality is a
+      // wish, not a suggestion.
+      if (this.qualityMode !== 'auto') return;
+      if (stepQuality(this.qualityState, this.fpsMeter.fps)) {
+        this.applyQuality();
+        this.hud.toast(`Beeld automatisch op ${tierLabel(this.qualityState.tier)} gezet — FPS voorrang`);
+      }
+    }
+  }
+
+  /** Handle the settings dropdown: remember the wish and honour it. */
+  private setQualityMode(mode: string): void {
+    if (mode !== 'auto' && !isTier(mode)) return;
+    this.qualityMode = mode;
+    if (mode === 'auto') {
+      // Re-arm the state machine from wherever the player was parked; it
+      // climbs (or sinks) back to what this machine actually sustains.
+      this.qualityState.badStreak = 0;
+      this.qualityState.goodStreak = 0;
+    } else {
+      this.qualityState.tier = mode;
+      this.qualityState.badStreak = 0;
+      this.qualityState.goodStreak = 0;
+    }
+    try {
+      localStorage.setItem(QUALITY_MODE_KEY, mode);
+    } catch {
+      /* private mode: the wish lives for this session only */
+    }
+    this.applyQuality();
+  }
+
+  /**
+   * Push the current quality tier to the engine: render scale (the one
+   * lever that helps every fragment pass at once), the bloom chain, and a
+   * shared-material light cap. The chosen tier rides in localStorage so a
+   * machine that needs potato mode wakes up in potato mode tomorrow.
+   */
+  private applyQuality(): void {
+    const tier: QualityTier = this.qualityMode === 'auto' ? this.qualityState.tier : this.qualityMode;
+    const s = settingsFor({ tier, goodStreak: 0, badStreak: 0 });
+    if (this.qualityApplied && JSON.stringify(s) === JSON.stringify(this.qualityApplied)) {
+      // Same settings as already pushed: a mode switch to the tier we happen
+      // to be on must not rebuild shadow maps or materials for nothing.
+      try {
+        localStorage.setItem(QUALITY_STORAGE_KEY, tier);
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    this.qualityApplied = s;
+    this.engine.setHardwareScalingLevel(s.scale);
+    this.postfx.setBloomEnabled(s.bloom);
+    this.lighting.setShadowMode(s.shadow);
+    // Cap the per-material light loop on every shared PBR material: a base
+    // paved with torches must never widen the fragment shader's light loop.
+    if (s.maxLights > 0) {
+      for (const v of Object.values(this.mats)) {
+        const m = v as { maxSimultaneousLights?: number };
+        if (typeof m.maxSimultaneousLights === 'number') m.maxSimultaneousLights = s.maxLights;
+      }
+    }
+    try {
+      localStorage.setItem(QUALITY_STORAGE_KEY, tier);
+    } catch {
+      /* private mode: the tier simply re-learns itself each session */
+    }
   }
 
   private refreshHud(force: boolean): void {
@@ -3141,6 +4206,17 @@ export class Game {
     this.engine.dispose();
   }
 }
+
+/**
+ * Tower chests hide a sprig of torenkruid in the straw ([min, max] per
+ * chest id) — the only reliable way for a player to start their own salve
+ * craft without hunting spiders for it.
+ */
+const CHEST_HERB_BONUS: Record<string, [min: number, max: number]> = {
+  chest_tower_l1: [1, 3],
+  chest_tower_l2: [1, 3],
+  chest_tower_top: [2, 4],
+};
 
 /** Shortest-arc angle interpolation. */
 function dampAngle(from: number, to: number, dt: number): number {

@@ -650,6 +650,19 @@ body {
   opacity: 0.8;
 }
 
+/* Beeldkwaliteit dropdown in the settings panel: same row furniture as the
+   sensitivity slider, but a select — the choice is discrete, not analog. */
+.quality-select {
+  background: rgba(12, 16, 24, 0.9);
+  color: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 6px;
+  cursor: pointer;
+}
+
 .settings-neutral {
   display: block;
   width: 100%;
@@ -781,6 +794,279 @@ body {
 }
 
 .shop-close {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* Perk tree panel (K): dark glass with the tree drawn for real — SVG
+   connectors behind absolutely positioned node cards. Root on top, its two
+   choices below, the deeper gifts branching off them. */
+.perk {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 460px;
+  max-height: 86vh;
+  overflow-y: auto;
+  background: rgba(10, 25, 30, 0.86);
+  border: 1px solid rgba(120, 220, 200, 0.25);
+  border-radius: 10px;
+  padding: 12px;
+  pointer-events: auto;
+}
+
+.perk[hidden] {
+  display: none;
+}
+
+.perk-title {
+  font-size: 14px;
+  font-weight: bold;
+  color: #a9e6d8;
+  margin-bottom: 8px;
+  letter-spacing: 0.5px;
+}
+
+.perk-list {
+  position: relative;
+}
+
+.perk-links {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.perk-links path {
+  fill: none;
+  stroke-width: 2.5;
+  vector-effect: non-scaling-stroke;
+  stroke-linecap: round;
+}
+
+.perk-links path.on {
+  stroke: rgba(140, 235, 205, 0.85);
+}
+
+.perk-links path.ready {
+  stroke: rgba(140, 235, 205, 0.4);
+  stroke-dasharray: 4 5;
+  animation: perk-flow 1.2s linear infinite;
+}
+
+.perk-links path.off {
+  stroke: rgba(160, 210, 200, 0.16);
+}
+
+@keyframes perk-flow {
+  to {
+    stroke-dashoffset: -9;
+  }
+}
+
+.perk-node {
+  position: absolute;
+  transform: translateX(-50%);
+  width: 104px;
+  min-height: 60px;
+  padding: 6px 4px;
+  border-radius: 9px;
+  border: 1px solid rgba(120, 220, 200, 0.25);
+  background: rgba(16, 34, 40, 0.92);
+  color: #d7efe8;
+  font: inherit;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  text-align: center;
+}
+
+.perk-node .pn-mark {
+  font-size: 15px;
+  line-height: 1;
+  color: #6f9c92;
+}
+
+.perk-node .pn-name {
+  font-size: 10.5px;
+  font-weight: bold;
+  line-height: 1.15;
+}
+
+/* Bought: the node fills in and glows steady. */
+.perk-node.s-owned {
+  border-color: rgba(140, 235, 205, 0.9);
+  background: rgba(56, 150, 130, 0.4);
+  box-shadow: 0 0 10px rgba(120, 220, 200, 0.25);
+}
+
+.perk-node.s-owned .pn-mark {
+  color: #9ff0d8;
+}
+
+/* Affordable: the pulsing invite — the only node that answers to a click. */
+.perk-node.s-buy {
+  border-color: rgba(160, 245, 215, 0.95);
+  box-shadow: 0 0 12px rgba(120, 220, 200, 0.35);
+  cursor: pointer;
+  animation: perk-pulse 1.6s ease-in-out infinite;
+}
+
+.perk-node.s-buy .pn-mark {
+  color: #ffe08a;
+}
+
+.perk-node.s-buy:hover {
+  background: rgba(40, 110, 96, 0.55);
+}
+
+@keyframes perk-pulse {
+  50% {
+    box-shadow: 0 0 18px rgba(140, 235, 205, 0.6);
+  }
+}
+
+/* Branch not unlocked yet / no points: dim, no pointer promise. */
+.perk-node.s-locked {
+  opacity: 0.42;
+}
+
+.perk-node.s-locked .pn-mark {
+  color: #4d6a64;
+}
+
+.perk-node.s-poor {
+  opacity: 0.75;
+  border-style: dashed;
+}
+
+.perk-info {
+  min-height: 30px;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 11px;
+  line-height: 1.35;
+  color: #b9ddd3;
+}
+
+.perk-close {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+
+/* Onderhandel-paneel (systems/negotiation.ts): same DNA as the shop panel,
+   gold-tinted, on the right so it never collides with the witch's left. */
+.nego {
+  position: absolute;
+  top: 50%;
+  right: 18px;
+  transform: translateY(-50%);
+  width: 360px;
+  max-height: 76vh;
+  overflow-y: auto;
+  background: rgba(30, 20, 8, 0.86);
+  border: 1px solid rgba(255, 200, 110, 0.28);
+  border-radius: 10px;
+  padding: 12px;
+  pointer-events: auto;
+}
+
+.nego[hidden] {
+  display: none;
+}
+
+.nego-title {
+  font-size: 14px;
+  font-weight: bold;
+  color: #ffd98a;
+  margin-bottom: 8px;
+  letter-spacing: 0.5px;
+}
+
+.nego-row {
+  padding: 7px 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.nego-top {
+  font-size: 13px;
+  color: #ffe9c4;
+}
+
+.nego-mid {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.nego-step,
+.nego-haggle,
+.nego-deal {
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.07);
+  color: #fff;
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.nego-step {
+  padding: 3px 7px;
+}
+
+.nego-bid {
+  min-width: 52px;
+  text-align: center;
+  font-size: 12px;
+  color: #ffd98a;
+}
+
+.nego-deal {
+  background: rgba(255, 190, 70, 0.24);
+  border-color: rgba(255, 205, 110, 0.5);
+}
+
+.nego-step:disabled,
+.nego-haggle:disabled,
+.nego-deal:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.nego-say {
+  margin-top: 3px;
+  font-size: 11px;
+  font-style: italic;
+  color: #c9b189;
+}
+
+.nego-close {
   display: block;
   width: 100%;
   margin-top: 10px;

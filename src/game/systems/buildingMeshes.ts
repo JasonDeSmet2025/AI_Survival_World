@@ -77,6 +77,8 @@ export class BuildingRenderer {
   private standalone = new Set<string>();
   private fireTex: DynamicTexture | null = null;
   private char: StandardMaterial;
+  private woodVars: PBRMaterial[] | null = null;
+  private roofTiles: PBRMaterial | null = null;
   private mattress: PBRMaterial | null = null;
   private pillow: PBRMaterial | null = null;
   private rugMat: PBRMaterial | null = null;
@@ -146,6 +148,16 @@ export class BuildingRenderer {
       this.previewHandle = this.buildMesh(kind, x, z, y, rot, true);
       this.previewKind = kind;
       for (const m of this.previewHandle.meshes) m.material = this.mats.ghost;
+      // A footprint ring on the ground: at build distance the 3D ghost alone
+      // is hard to read — the ring shows exactly which module you will fill.
+      const footRoot = this.previewHandle.meshes[0]?.parent;
+      if (footRoot instanceof TransformNode) {
+        const ring = MeshBuilder.CreateDisc('ghostFoot', { radius: 0.94, tessellation: 28 }, this.scene);
+        ring.parent = footRoot;
+        ring.rotation.x = Math.PI / 2;
+        ring.position.y = 0.04;
+        ring.material = this.mats.ghost;
+      }
     }
 
     const root = this.previewHandle.meshes[0]?.parent;
@@ -161,6 +173,13 @@ export class BuildingRenderer {
       valid ? 0.42 : 0.72,
       valid ? 0.62 : 0.16,
       valid ? 0.48 : 0.12,
+    );
+    // Unlit already, but a touch of glow keeps the ghost readable at night
+    // and marks an illegal spot in angry red even in shadow.
+    this.mats.ghost.emissiveColor.set(
+      valid ? 0.04 : 0.22,
+      valid ? 0.13 : 0.03,
+      valid ? 0.09 : 0.02,
     );
   }
 
@@ -196,6 +215,11 @@ export class BuildingRenderer {
     root.rotation.y = (rot / 4) * Math.PI * 2;
 
     const rand = mulberry(hashStr(kind + '_' + x.toFixed(1) + '_' + z.toFixed(1)));
+    // One wood tone per building (from its own id-hash), so a camp of four
+    // walls reads as four buildings and not one cloned prefab. The variants
+    // are shared singletons — tinted clones of the plank material, no
+    // per-building material churn, no disposal bookkeeping.
+    const wood = this.woodVariant(rand);
     const meshes: Mesh[] = [];
     /** Door only: the live hinge node, handed back to create(). */
     let hingeOut: TransformNode | undefined;
@@ -214,11 +238,16 @@ export class BuildingRenderer {
       return m;
     };
 
-    const wood = this.mats.buildingWood;
     const stone = this.mats.buildingStone;
     // Fence posts, bench legs and sign legs are debarked trunks, not milled
     // planks — the bark material is what makes them read as cut from a tree.
     const barkMat = this.mats.bark;
+    // Thatch-and-clay roof tone: slabs read as a roof, not as a flat wall
+    // that got tilted.
+    const roofMat = (): PBRMaterial => {
+      this.roofTiles ??= this.makeFabric('roofTilesMat', 0.36, 0.17, 0.12, 0.92);
+      return this.roofTiles;
+    };
 
     // Bed fabrics (lazily created, shared by all beds).
     const mattress = (): PBRMaterial => {
@@ -335,12 +364,12 @@ export class BuildingRenderer {
         const slabY =
           ROOF_RIDGE_OFFSET - halfThick / Math.cos(ROOF_PITCH) - grade * slabCenter;
         for (const s of [-1, 1] as const) {
-          box(BUILDING_MODULE + 0.1, halfThick * 2, slabDepth, wood, 0, slabY, s * slabCenter, s * ROOF_PITCH);
+          box(BUILDING_MODULE + 0.1, halfThick * 2, slabDepth, roofMat(), 0, slabY, s * slabCenter, s * ROOF_PITCH);
         }
         box(BUILDING_MODULE + 0.15, 0.14, 0.22, wood, 0, ROOF_RIDGE_OFFSET - 0.07, 0);
         // Gable fascias at the two ends of the ridge.
         for (const sx of [-1, 1] as const) {
-          box(0.16, 0.3, ROOF_SPAN * 2 - 0.1, wood, sx * (edge + 0.02), ROOF_RIDGE_OFFSET - 0.2, 0);
+          box(0.16, 0.3, ROOF_SPAN * 2 - 0.1, roofMat(), sx * (edge + 0.02), ROOF_RIDGE_OFFSET - 0.2, 0);
         }
         // Rafter tails poking below the eaves for silhouette.
         for (const s of [-1, 1] as const) {
@@ -636,6 +665,31 @@ export class BuildingRenderer {
     m.metallic = 0;
     m.roughness = roughness;
     m.environmentIntensity = 0.7;
+    return m;
+  }
+
+  /**
+   * Shared tinted clones of the plank material. clone() keeps the texture
+   * references, so every variant draws with the same plank albedo and only
+   * the colour multiplier differs — four materials for the whole world.
+   */
+  private woodVariant(rand: () => number): PBRMaterial {
+    this.woodVars ??= [
+      this.mats.buildingWood,
+      this.tintClone('bwSun', this.mats.buildingWood, 1.18, 1.1, 0.98),
+      this.tintClone('bwShade', this.mats.buildingWood, 0.8, 0.78, 0.74),
+      this.tintClone('bwWeather', this.mats.buildingWood, 0.84, 0.9, 0.96),
+    ];
+    return this.woodVars[Math.min(this.woodVars.length - 1, Math.floor(rand() * this.woodVars.length))];
+  }
+
+  private tintClone(name: string, base: PBRMaterial, r: number, g: number, b: number): PBRMaterial {
+    const m = base.clone(name) as PBRMaterial;
+    m.albedoColor = new Color3(
+      Math.min(1.3, base.albedoColor.r * r),
+      Math.min(1.3, base.albedoColor.g * g),
+      Math.min(1.3, base.albedoColor.b * b),
+    );
     return m;
   }
 

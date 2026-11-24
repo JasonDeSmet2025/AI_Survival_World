@@ -22,6 +22,32 @@ export const ANIMAL_MELEE_DAMAGE: Record<string, number> = {
   sword: 2,
 };
 
+// ---------------------------------------------------------------------------
+// The witch's combat buffs (systems/shop.ts sells the potions; the game
+// shell owns the timers — these are the pure multiplier rules).
+// ---------------------------------------------------------------------------
+
+/** Krachtdrank: melee and bow damage double while it burns. */
+export const STRENGTH_DAMAGE_MULTIPLIER = 2;
+
+/** Houtenhuid: incoming blows (bites, hex-hands, lava, falls) halve. */
+export const TOUGH_INCOMING_MULTIPLIER = 0.5;
+
+/** Scale an outgoing hit by the strength buff (never rounds below 1). */
+export function withStrength(damage: number, strengthActive: boolean): number {
+  if (!(damage > 0) || !strengthActive) return damage;
+  return Math.max(1, Math.round(damage * STRENGTH_DAMAGE_MULTIPLIER));
+}
+
+/**
+ * Scale an incoming blow by the barkskin buff AFTER the shield rule
+ * (systems/combat.ts absorbDamage runs first): half, never below 1.
+ */
+export function withTough(amount: number, toughActive: boolean): number {
+  if (!(amount > 0) || !toughActive) return amount;
+  return Math.max(1, Math.round(amount * TOUGH_INCOMING_MULTIPLIER));
+}
+
 /**
  * Item id -> ranged damage against animals, in whole hits. The bow is the
  * expensive answer: 3 hits drops a sheep (3) in a single arrow and a cow (4)
@@ -138,3 +164,58 @@ export function validIncomingHit(
 
 /** Duration of the swing animation on the player character (seconds). */
 export const SWING_ANIM_TIME = 0.35;
+
+// ---------------------------------------------------------------------------
+// Tower spiders (ai/spiders.ts) — the hostile fauna of the witch's tower
+// ---------------------------------------------------------------------------
+
+/**
+ * Sword hits needed to squash a spider. A spider takes the same whole-hit
+ * economy as herd animals: a bare fist chips 1, the stone sword lands 2 —
+ * so a spider dies in two swings, while the fist needs a panicked flurry.
+ */
+export const SPIDER_HITS = 4;
+
+/** Item id -> melee damage against spiders, in whole hits (fist = 1). */
+export function spiderMeleeDamage(itemId: string | null): number {
+  return (itemId && ANIMAL_MELEE_DAMAGE[itemId]) || 1;
+}
+
+/** How far a spider starts chasing you (metres, horizontal). */
+export const SPIDER_AGGRO_RANGE = 8;
+
+/** How far from its spawn a spider will follow before giving up. */
+export const SPIDER_CHASE_LIMIT = 16;
+
+/** A bite lands inside this reach (metres). */
+export const SPIDER_BITE_RANGE = 1.25;
+
+/** Damage of one bite to the player (before shield absorption). */
+export const SPIDER_BITE_DAMAGE = 6;
+
+/** Seconds between two bites by the same spider. */
+export const SPIDER_BITE_COOLDOWN = 1.7;
+
+/** Walk speed while stalking its court, and while chasing (m/s). */
+export const SPIDER_SPEED_PATROL = 0.9;
+export const SPIDER_SPEED_CHASE = 2.7;
+
+/** A bite may land now (same cooldown shape as the player's swing). */
+export function canBite(now: number, lastBiteAt: number): boolean {
+  return now - lastBiteAt >= SPIDER_BITE_COOLDOWN;
+}
+
+/**
+ * Does the spider see the player enough to chase? Aggro needs both horizontal
+ * range AND the player being on (almost) the spider's own floor — a player
+ * walking past OUTSIDE the tower must not be stalked through the stone by
+ * the floor-2 spider, and climbing the stairs pulls only the spider whose
+ * floor you enter.
+ */
+export function spiderAggro(playerX: number, playerZ: number, playerY: number, spider: {
+  x: number; z: number; y: number;
+}): boolean {
+  const dx = playerX - spider.x;
+  const dz = playerZ - spider.z;
+  return Math.hypot(dx, dz) <= SPIDER_AGGRO_RANGE && Math.abs(playerY - spider.y) < 2.2;
+}

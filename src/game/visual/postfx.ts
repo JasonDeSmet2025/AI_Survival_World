@@ -213,6 +213,21 @@ export class PostFx {
     }
   }
 
+  /**
+   * Attach/detach the bloom chain. Cheap levers matter on a weak GPU: the
+   * adaptive quality system (systems/quality.ts) turns bloom off before it
+   * ever lowers the resolution, because the blur chain costs three extra
+   * full-screen passes every single frame.
+   */
+  setBloomEnabled(enabled: boolean): void {
+    const mgr = this.scene.postProcessRenderPipelineManager;
+    if (enabled) {
+      mgr.enableEffectInPipeline(PIPELINE_NAME, BLOOM_EFFECT_ID, this.camera);
+    } else {
+      mgr.disableEffectInPipeline(PIPELINE_NAME, BLOOM_EFFECT_ID, this.camera);
+    }
+  }
+
   dispose(): void {
     this.scene.postProcessRenderPipelineManager.detachCamerasFromRenderPipeline(
       PIPELINE_NAME,

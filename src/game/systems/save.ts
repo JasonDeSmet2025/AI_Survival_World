@@ -7,6 +7,7 @@ import type { Inventory } from './inventory';
 import type { StatSnapshot } from './stats';
 import type { WorldState } from '../world/types';
 import type { SerializedConversation } from '../ai/chat';
+import { isPerkState, type PerkState } from './perks';
 
 const KEY = 'asw_save_v1';
 
@@ -45,6 +46,20 @@ function isSaveData(d: unknown): d is SaveData {
     if (typeof q !== 'object' || Array.isArray(q)) return false;
     if (!Array.isArray(q.offered) || !Array.isArray(q.active) || !Array.isArray(q.completed)) return false;
   }
+  if ('witchAnger' in s) {
+    // The witch's mood is a plain number (systems/witch.ts). Absent = calm
+    // in every older save; present-but-garbage — including null, which is
+    // what JSON makes of a NaN — must not boot a furious witch (or a NaN
+    // anger, which would compare false against every threshold forever).
+    if (typeof s.witchAnger !== 'number' || !Number.isFinite(s.witchAnger)) return false;
+  }
+  if ('perks' in s) {
+    // The perk tree validates ITSELF (chain, ids, points): a save that
+    // claims a tier-3 without its chain is as broken as a negative total —
+    // and a present-but-null perks field is the same JSON alias for a bug
+    // as a null witchAnger, so it goes too.
+    if (!isPerkState(s.perks)) return false;
+  }
   return true;
 }
 
@@ -66,6 +81,14 @@ export interface SaveData {
   npcs?: Record<string, SerializedConversation>;
   /** Quest log snapshot (see systems/quests.ts). Absent in pre-quest saves. */
   quests?: unknown;
+  /** Ids of loot chests already emptied this world (see systems/chests.ts). */
+  chests?: string[];
+  /** Ids of den spiders already killed (see ai/spiders.ts + world/volcano.ts). */
+  spidersDead?: string[];
+  /** The witch's anger 0..100 (systems/witch.ts). Absent = calm. */
+  witchAnger?: number;
+  /** Perk tree (systems/perks.ts): points left + ids bought. Absent = no points yet. */
+  perks?: PerkState;
 }
 
 export const Save = {

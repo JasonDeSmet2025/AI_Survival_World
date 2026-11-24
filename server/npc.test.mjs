@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import crypto from 'node:crypto';
 import http from 'node:http';
+import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -59,10 +60,26 @@ const sum = (list) => list.reduce((s, m) => s + m.content.length, 0);
 // 1. Personas: one server-side truth
 // ---------------------------------------------------------------------------
 
+// The client's own list, read out of the source it ships with. A hardcoded
+// copy of the ids here would keep passing after someone added a fourth
+// islander, and the failure would show up as a player talking to a character
+// the server refuses to answer for.
+const clientNpcIds = () => {
+  const src = readFileSync(
+    fileURLToPath(new URL('../src/game/ai/npc.ts', import.meta.url)),
+    'utf8',
+  );
+  return [...src.matchAll(/^\s+id: '([a-z]+)',\s*$/gm)].map((m) => m[1]).sort();
+};
+
 test('personas', async () => {
   await test('the server owns exactly the NPCs the client has', () => {
-    assert.deepEqual(personaIds().sort(), ['mara', 'tomas']);
-    assert.equal(Object.keys(NPC_PERSONAS).length, 2);
+    assert.deepEqual(
+      personaIds().sort(),
+      ['ansel', 'heks', 'joris', 'mara', 'sien', 'tomas'],
+    );
+    assert.equal(Object.keys(NPC_PERSONAS).length, 6);
+    assert.deepEqual(personaIds().sort(), clientNpcIds());
   });
 
   await test('each persona carries the character, the world and its limits', () => {

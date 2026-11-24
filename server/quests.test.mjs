@@ -16,13 +16,16 @@ test('templates only use goals the game can verify', () => {
   const goalTypes = new Set(['gather', 'craft', 'build', 'cook', 'talk']);
   for (const [id, q] of Object.entries(QUEST_TEMPLATES)) {
     assert.equal(q.id, id, 'id key matches');
-    assert.ok(['mara', 'tomas'].includes(q.npc), `${id} belongs to a known npc`);
+    assert.ok(['mara', 'tomas', 'heks'].includes(q.npc), `${id} belongs to a known npc`);
     assert.ok(goalTypes.has(q.goal.type), `${id} has a verifiable goal`);
     assert.ok(Number.isInteger(q.goal.count) && q.goal.count >= 1 && q.goal.count <= 20);
     assert.ok(Number.isFinite(q.reward.xp) && q.reward.xp > 0 && q.reward.xp <= 200);
     assert.ok(Array.isArray(q.reward.items));
     for (const it of q.reward.items) {
-      assert.ok(['wood', 'stone', 'berry', 'cooked_berry'].includes(it.id), `${id} rewards real items`);
+      assert.ok(
+        ['wood', 'stone', 'berry', 'cooked_berry', 'gold', 'herb', 'salve'].includes(it.id),
+        `${id} rewards real items`,
+      );
     }
   }
 });

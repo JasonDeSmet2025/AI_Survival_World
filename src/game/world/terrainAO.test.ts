@@ -168,10 +168,20 @@ describe('bakeTerrainAO (pure)', () => {
   it('default-size bake fits a time budget (one-time worldgen cost)', () => {
     // Full 321x321 default grid: the bake must stay comfortably below the
     // ~5 s worldgen budget (measured on this CI-class hardware).
+    //
+    // The guard was 3000 ms with one island. The second island adds a height
+    // delta to every height-field sample (heightfield.ts -> isleDelta): alone
+    // it measures ~3.1 s here (+10 %, mostly the call itself, since the delta
+    // early-outs on one sqrt outside its footprint), but this file also runs
+    // while the rest of the suite contends for the CPU, where the same bake
+    // measured 3.75 s and tripped a 3600 threshold. So the number below is a
+    // ceiling with room for that contention, not a measurement — what it must
+    // still catch is a real regression (the pre-grid bake was 10 s+, and the
+    // point of the guard is a doubling, not a 20 % wobble).
     const t0 = performance.now();
     const grid = buildTerrainGrid();
     const t1 = performance.now();
-    expect(t1 - t0).toBeLessThan(3000);
+    expect(t1 - t0).toBeLessThan(4300);
     expect(grid.ao.length).toBe(grid.samples * grid.samples);
     let min = Infinity;
     let max = -Infinity;

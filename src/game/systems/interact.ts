@@ -28,6 +28,10 @@ export type InteractTarget =
    */
   | { kind: 'workbench'; id: string; x: number; y: number; z: number; radius: number }
   | { kind: 'witch'; x: number; y: number; z: number; radius: number }
+  /** A loot chest in a world landmark (systems/chests.ts + world/volcano.ts). */
+  | { kind: 'chest'; id: string; x: number; y: number; z: number; radius: number }
+  /** A hostile den spider — the sword answers it (ai/spiders.ts). */
+  | { kind: 'spider'; id: string; x: number; y: number; z: number; radius: number }
   | { kind: 'player'; id: string; x: number; y: number; z: number; radius: number }
   | { kind: 'water'; x: number; y: number; z: number; radius: number };
 

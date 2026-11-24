@@ -148,6 +148,74 @@ describe('Save structural guard', () => {
     expect(Save.read()).not.toBeNull();
   });
 
+  it('carries the witch mood when there is one, and never a broken one', () => {
+    const base = {
+      v: 1,
+      savedAt: 1,
+      stats: new SurvivalStats().snapshot(),
+      inventory: [],
+      selected: 0,
+      pos: { x: 0, y: 0, z: 0 },
+      yaw: 0,
+      pitch: -0.65,
+      elapsed: 0,
+      world: { version: 1, seed: 0, depleted: [], hp: {}, buildings: [] },
+    };
+    const put = (raw: string) => store.set('asw_save_v1', raw);
+
+    // An older save has no mood at all: still loads, and reads back without
+    // the field, which the game shell treats as "calm".
+    put(JSON.stringify(base));
+    expect(Save.read()!.witchAnger).toBeUndefined();
+
+    put(JSON.stringify({ ...base, witchAnger: 68 }));
+    expect(Save.read()!.witchAnger).toBe(68);
+
+    // Garbage moods are rejected outright — including null, which is what
+    // JSON makes of NaN: a NaN anger would compare false against every
+    // threshold and freeze her in a mood nobody can fix.
+    for (const junk of ['furia', true, {}, [], null, NaN]) {
+      put(JSON.stringify({ ...base, witchAnger: junk }));
+      expect(Save.read(), `witchAnger: ${String(junk)}`).toBeNull();
+    }
+  });
+
+  it('perks: absent loads, honest states roundtrip, broken trees are rejected', () => {
+    const base = {
+      v: 1,
+      savedAt: 1,
+      stats: new SurvivalStats().snapshot(),
+      inventory: [],
+      selected: 0,
+      pos: { x: 0, y: 0, z: 0 },
+      yaw: 0,
+      pitch: -0.65,
+      elapsed: 0,
+      world: { version: 1, seed: 0, depleted: [], hp: {}, buildings: [] },
+    };
+    const put = (raw: string) => store.set('asw_save_v1', raw);
+
+    put(JSON.stringify(base));
+    expect(Save.read()!.perks).toBeUndefined();
+
+    put(JSON.stringify({ ...base, perks: { points: 2, owned: ['gehard'] } }));
+    expect(Save.read()!.perks).toEqual({ points: 2, owned: ['gehard'] });
+
+    for (const junk of [
+      null,
+      'gehard',
+      { points: -1, owned: [] },
+      { points: 1.5, owned: [] },
+      { points: 0, owned: ['troon'] },
+      // A perk without its parent SHAPE-validates (pruneOrphanPerks repairs
+      // the tree on load) — a duplicate purchase never does.
+      { points: 0, owned: ['gehard', 'gehard'] },
+    ]) {
+      put(JSON.stringify({ ...base, perks: junk }));
+      expect(Save.read(), `perks: ${JSON.stringify(junk)}`).toBeNull();
+    }
+  });
+
   it('clear() removes the save', () => {
     const inv = new Inventory();
     Save.write(Save.toSaveData(new SurvivalStats().snapshot(), inv, { x: 0, y: 0, z: 0 }, 0, -0.65, 0, {

@@ -254,6 +254,7 @@ export class Hud {
   private keysEl!: HTMLDivElement;
   private keyStatus!: HTMLDivElement;
   private sensInput!: HTMLInputElement;
+  private qualitySelect!: HTMLSelectElement;
   private sensValue!: HTMLSpanElement;
   private keysResetBtn!: HTMLButtonElement;
   private bindings: Bindings = {} as Bindings;
@@ -265,6 +266,13 @@ export class Hud {
    */
   private clickGuardUntil = 0;
   private shopEl!: HTMLDivElement;
+  private perkEl!: HTMLDivElement;
+  private perkHeadEl!: HTMLDivElement;
+  private perkListEl!: HTMLDivElement;
+  private perkInfoEl!: HTMLDivElement;
+  private negoEl!: HTMLDivElement;
+  private negoListEl!: HTMLDivElement;
+  private negoHeadEl!: HTMLDivElement;
   private shopListEl!: HTMLDivElement;
   private resetBtn!: HTMLButtonElement;
   private resetArmed = false;
@@ -509,6 +517,38 @@ export class Hud {
     this.sensValue.textContent = '1.00×';
     sensRow.append(sensLabel, this.sensInput, this.sensValue);
     this.settingsEl.appendChild(sensRow);
+
+    // --- Beeldkwaliteit. Automatisch is de standaard (het fps-maatwerk van
+    // systems/quality.ts), maar de speler mag altijd zelf kiezen — voor iem
+    // kan 24 fps scherp beter spelen dan 45 fps van was.
+    const qRow = el('sens-row', this.settingsEl);
+    const qLabel = document.createElement('span');
+    qLabel.className = 'sens-label';
+    qLabel.textContent = 'Beeldkwaliteit';
+    this.qualitySelect = document.createElement('select');
+    this.qualitySelect.className = 'quality-select';
+    for (const [value, label] of [
+      ['auto', 'Automatisch'],
+      ['high', 'Hoog'],
+      ['medium', 'Evenwichtig'],
+      ['low', 'Laag'],
+      ['potato', 'Spaartamodus'],
+    ]) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label;
+      this.qualitySelect.appendChild(opt);
+    }
+    this.qualitySelect.title =
+      'Automatisch past schaduw, bloei en resolutie aan de fps aan; een gekozen kwaliteit blijft staan.';
+    this.qualitySelect.addEventListener('change', () => {
+      window.dispatchEvent(new CustomEvent('hud-quality', { detail: this.qualitySelect.value }));
+    });
+    const qHint = document.createElement('span');
+    qHint.className = 'sens-value';
+    qHint.textContent = 'fps ↔ scherpte';
+    qRow.append(qLabel, this.qualitySelect, qHint);
+    this.settingsEl.appendChild(qRow);
     this.keysResetBtn = document.createElement('button');
     this.keysResetBtn.className = 'settings-neutral';
     this.keysResetBtn.textContent = 'Besturing terugzetten';
@@ -566,6 +606,42 @@ export class Hud {
       window.dispatchEvent(new CustomEvent('hud-shop-close'));
     });
     this.shopEl.appendChild(shopClose);
+
+    // --- Perk tree panel (K): three branches, one point per level. Same
+    // event-contract as the shop: the HUD draws rows and reports clicks,
+    // systems/perks.ts decides whether a purchase is legal.
+    this.perkEl = el('perk');
+    this.perkEl.hidden = true;
+    this.perkHeadEl = el('perk-title', this.perkEl);
+    this.perkHeadEl.textContent = 'TALENTEN';
+    this.perkListEl = el('perk-list', this.perkEl);
+    this.perkInfoEl = el('perk-info', this.perkEl);
+    const perkClose = document.createElement('button');
+    perkClose.className = 'perk-close';
+    perkClose.textContent = 'Sluiten';
+    perkClose.addEventListener('click', (e) => {
+      e.stopPropagation();
+      window.dispatchEvent(new CustomEvent('hud-perk-close'));
+    });
+    this.perkEl.appendChild(perkClose);
+
+    // --- Negotiation panel (N at a village trader): the haggle table of
+    // systems/negotiation.ts. Same event contract as the shop — the HUD
+    // only draws the current table state and reports clicks; every price
+    // move, deal and mood change is decided by the game.
+    this.negoEl = el('nego');
+    this.negoEl.hidden = true;
+    this.negoHeadEl = el('nego-title', this.negoEl);
+    this.negoHeadEl.textContent = 'ONDERHANDELEN';
+    this.negoListEl = el('nego-list', this.negoEl);
+    const negoClose = document.createElement('button');
+    negoClose.className = 'nego-close';
+    negoClose.textContent = 'Markt verlaten';
+    negoClose.addEventListener('click', (e) => {
+      e.stopPropagation();
+      window.dispatchEvent(new CustomEvent('hud-nego-close'));
+    });
+    this.negoEl.appendChild(negoClose);
 
     // --- Active quest tracker (right column, under the survival bars)
     this.questsEl = el('quests', right);
@@ -684,7 +760,7 @@ export class Hud {
     this.root.appendChild(this.damageFlashEl);
 
     // Pointer-events back on for interactive parts.
-    [this.hotbarEl, this.craftEl, this.chatEl, this.deathEl, this.mpPanelEl, this.mpNameEl, this.invEl, this.settingsEl, this.shopEl].forEach((e) => {
+    [this.hotbarEl, this.craftEl, this.chatEl, this.deathEl, this.mpPanelEl, this.mpNameEl, this.invEl, this.settingsEl, this.shopEl, this.perkEl, this.negoEl].forEach((e) => {
       e.style.pointerEvents = 'auto';
     });
   }
@@ -953,6 +1029,169 @@ export class Hud {
       row.appendChild(priceEl);
       row.appendChild(btn);
       this.shopListEl.appendChild(row);
+    }
+  }
+
+  /**
+   * Draw the perk TREE (systems/perks.ts via game.ts). Nodes arrive with
+   * layout coordinates computed from the parent-child structure — x is a
+   * 0..100 percentage, row is the depth — and the HUD draws the real branch
+   * shape: SVG connectors behind absolutely positioned node cards, so the
+   * player sees the root first and the choices hanging under it. A connector
+   * lights up along the owned path ('on'), glows while it leads to something
+   * buyable ('ready') and stays dim while the parent is locked.
+   */
+  setPerks(
+    open: boolean,
+    points: number,
+    nodes: Array<{
+      id: string;
+      name: string;
+      desc: string;
+      parent: string | null;
+      x: number;
+      row: number;
+      state: 'buy' | 'owned' | 'locked' | 'poor';
+    }>,
+  ): void {
+    this.perkEl.hidden = !open;
+    if (!open) return;
+    this.perkHeadEl.textContent = `TALENTEN — ${points} punt${points === 1 ? '' : 'en'} te vergeven  (K of Esc sluit)`;
+    this.perkListEl.innerHTML = '';
+    const maxRow = nodes.reduce((m, n) => Math.max(m, n.row), 0);
+    const ROW_H = 98;
+    const NODE_H = 64;
+    const height = (maxRow + 1) * ROW_H + 6;
+    this.perkListEl.style.height = `${height}px`;
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+
+    // Connectors first, so nodes sit on top of their branches.
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'perk-links');
+    svg.setAttribute('viewBox', `0 0 100 ${height}`);
+    svg.setAttribute('preserveAspectRatio', 'none');
+    for (const n of nodes) {
+      if (!n.parent) continue;
+      const p = byId.get(n.parent);
+      if (!p) continue;
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      const y1 = p.row * ROW_H + NODE_H - 4;
+      const y2 = n.row * ROW_H + 2;
+      const mid = (y1 + y2) / 2;
+      path.setAttribute('d', `M ${p.x} ${y1} C ${p.x} ${mid}, ${n.x} ${mid}, ${n.x} ${y2}`);
+      path.setAttribute(
+        'class',
+        p.state === 'owned' ? (n.state === 'owned' ? 'on' : 'ready') : 'off',
+      );
+      svg.appendChild(path);
+    }
+    this.perkListEl.appendChild(svg);
+
+    for (const n of nodes) {
+      const node = document.createElement('button');
+      node.className = `perk-node s-${n.state}`;
+      node.style.left = `${n.x}%`;
+      node.style.top = `${n.row * ROW_H}px`;
+      node.innerHTML =
+        `<span class="pn-mark">${n.state === 'owned' ? '✓' : n.state === 'locked' ? '✦' : '★'}</span>` +
+        `<span class="pn-name">${n.name}</span>`;
+      node.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (n.state !== 'buy') return;
+        window.dispatchEvent(new CustomEvent('hud-perk-buy', { detail: n.id }));
+      });
+      node.addEventListener('mouseenter', () => {
+        const tail =
+          n.state === 'owned' ? ' — eigen' : n.state === 'buy' ? ' — klik om te kopen (1 punt)' : '';
+        this.perkInfoEl.textContent = `${n.name} — ${n.desc}${tail}`;
+      });
+      node.addEventListener('mouseleave', () => this.perkDefaultInfo(points));
+      this.perkListEl.appendChild(node);
+    }
+    this.perkDefaultInfo(points);
+  }
+
+  private perkDefaultInfo(points: number): void {
+    this.perkInfoEl.textContent =
+      points > 0
+        ? 'Beweeg over een talent voor de werking · klik een gloeiend talent om te kopen'
+        : 'Per level verdien je een talentpunt. De wortel ontgrendelt de keuze.';
+  }
+
+  /**
+   * Draw one negotiation table (systems/negotiation.ts). The HUD renders
+   * what the session currently says — ask, your bid, the villager's last
+   * remark — and reports button presses as custom events. All numbers are
+   * owned by the game.
+   */
+  setNegotiate(
+    open: boolean,
+    header: string,
+    rows: Array<{
+      id: string;
+      label: string;
+      askText: string;
+      say: string;
+      bid: number;
+      bidText: string;
+      canHaggle: boolean;
+      canDeal: boolean;
+      dealLabel: string;
+    }>,
+  ): void {
+    this.negoEl.hidden = !open;
+    if (!open) return;
+    this.negoHeadEl.textContent = header;
+    this.negoListEl.innerHTML = '';
+    for (const r of rows) {
+      const row = document.createElement('div');
+      row.className = 'nego-row' + (r.canDeal ? ' deal' : '');
+      const top = document.createElement('div');
+      top.className = 'nego-top';
+      top.textContent = `${r.label} — ${r.askText}`;
+      const mid = document.createElement('div');
+      mid.className = 'nego-mid';
+      const minus = document.createElement('button');
+      minus.className = 'nego-step';
+      minus.textContent = '−';
+      minus.disabled = !r.canHaggle;
+      minus.addEventListener('click', (e) => {
+        e.stopPropagation();
+        window.dispatchEvent(new CustomEvent('hud-nego-bid', { detail: { id: r.id, delta: -1 } }));
+      });
+      const bid = document.createElement('span');
+      bid.className = 'nego-bid';
+      bid.textContent = r.bidText;
+      const plus = document.createElement('button');
+      plus.className = 'nego-step';
+      plus.textContent = '+';
+      plus.disabled = !r.canHaggle;
+      plus.addEventListener('click', (e) => {
+        e.stopPropagation();
+        window.dispatchEvent(new CustomEvent('hud-nego-bid', { detail: { id: r.id, delta: 1 } }));
+      });
+      const offer = document.createElement('button');
+      offer.className = 'nego-haggle';
+      offer.textContent = 'Bieden';
+      offer.disabled = !r.canHaggle;
+      offer.addEventListener('click', (e) => {
+        e.stopPropagation();
+        window.dispatchEvent(new CustomEvent('hud-nego-haggle', { detail: r.id }));
+      });
+      const deal = document.createElement('button');
+      deal.className = 'nego-deal';
+      deal.textContent = r.dealLabel;
+      deal.disabled = !r.canDeal;
+      deal.addEventListener('click', (e) => {
+        e.stopPropagation();
+        window.dispatchEvent(new CustomEvent('hud-nego-deal', { detail: r.id }));
+      });
+      mid.append(minus, bid, plus, offer, deal);
+      const say = document.createElement('div');
+      say.className = 'nego-say';
+      say.textContent = `“${r.say}”`;
+      row.append(top, mid, say);
+      this.negoListEl.appendChild(row);
     }
   }
 
@@ -1296,6 +1535,11 @@ export class Hud {
   setFps(fps: number): void {
     this.fpsEl.textContent = `${fps} fps`;
     this.fpsEl.classList.toggle('low', fps < 30);
+  }
+
+  /** Show the current image-quality mode in the settings dropdown. */
+  setQualityMode(mode: string): void {
+    this.qualitySelect.value = mode;
   }
 
   showDeath(show: boolean): void {

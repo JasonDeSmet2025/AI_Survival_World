@@ -69,6 +69,14 @@ export class SurvivalStats {
   private exhaustT = 0;
 
   /**
+   * Multiplier on stamina DRAIN while sprinting (perk 'stuivende_longen'
+   * sets 0.65; game.ts re-applies it every frame). Deliberately NOT part of
+   * the snapshot: it is a passive derived from the perk tree, and a save
+   * that could fake a lower drain would smuggle an unearned perk in.
+   */
+  staminaDrainScale = 1;
+
+  /**
    * Advance simulation. Returns the damage dealt this tick (for HUD flash).
    */
   update(dt: number, env: Environment): number {
@@ -86,7 +94,8 @@ export class SurvivalStats {
     // gate, water and crouch exclusions), so holding Shift while blocked
     // never drains stamina.
     if (env.sprinting && !this.exhausted) {
-      this.stamina = clamp(this.stamina - SurvivalStats.RATES.sprintStamina * dt, 0, 100);
+      const drain = SurvivalStats.RATES.sprintStamina * dt * (Number.isFinite(this.staminaDrainScale) ? Math.max(0, this.staminaDrainScale) : 1);
+      this.stamina = clamp(this.stamina - drain, 0, 100);
       if (this.stamina <= 0) this.exhaustT = SurvivalStats.RATES.exhaustSeconds;
     } else if (this.exhausted) {
       // Exhausted: lockout counts down, no stamina recovery.

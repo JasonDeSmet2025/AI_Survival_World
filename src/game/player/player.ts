@@ -6,7 +6,8 @@ import {
   TransformNode,
   Vector3,
 } from '@babylonjs/core';
-import { createTool, type ToolKind } from '../visual/tools';
+import { createHeldItem } from '../visual/heldItems';
+import { ITEMS } from '../core/items';
 import type { SharedMaterials } from '../visual/materials';
 
 export type PlayerPose = 'idle' | 'walk' | 'sprint' | 'jump' | 'swim' | 'crouch';
@@ -66,7 +67,8 @@ export class PlayerCharacter {
   private wristR!: TransformNode;
 
   private tool: TransformNode | null = null;
-  private toolKind: ToolKind | null = null;
+  /** Item id currently in the hand (null = empty), for change-detection. */
+  private heldId: string | null = null;
   private harvestT = 0;
 
   private phase = 0;
@@ -279,12 +281,10 @@ export class PlayerCharacter {
   }
 
   setTool(itemId: string | null): void {
-    const kind: ToolKind | null =
-      itemId === 'stone_axe' ? 'stone_axe'
-        : itemId === 'stone_pick' ? 'stone_pick'
-          : itemId === 'sword' ? 'sword'
-            : null;
-    if (kind === this.toolKind) return;
+    // null = empty hands; '' (or any id ITEMS does not know) also counts as
+    // empty so remote avatars can never smuggle a phantom prop.
+    const id = itemId && ITEMS[itemId] ? itemId : null;
+    if (id === this.heldId) return;
     const removed = this.toolMeshes;
     if (this.tool) {
       // NOTE: in Babylon 9.33 the first dispose argument is `doNotRecurse`,
@@ -293,17 +293,21 @@ export class PlayerCharacter {
       this.tool = null;
       this.toolMeshes = [];
     }
-    this.toolKind = kind;
-    if (kind) {
-      this.tool = createTool(kind, this.root.getScene(), this.mats);
-      this.tool.parent = this.wristR;
-      // Grip: the haft runs up out of the fist, clear of the arm (see HELD_TOOL_POSE).
-      this.tool.position.copyFrom(HELD_TOOL_POSE.position);
-      this.tool.rotation.set(HELD_TOOL_POSE.rotationX, 0, HELD_TOOL_POSE.rotationZ);
-      // NOTE: in Babylon 9.33 getChildMeshes(true) means DIRECT children
-      // only; tool parts (handle grip/butt, axe head) are nested deeper, so
-      // false is required to register every part as a shadow caster.
-      this.toolMeshes = this.tool.getChildMeshes(false).filter((m): m is Mesh => m instanceof Mesh);
+    this.heldId = id;
+    if (id && this.tool === null) {
+      this.tool = createHeldItem(id, this.root.getScene(), this.mats);
+      if (!this.tool) {
+        this.heldId = null;
+      } else {
+        this.tool.parent = this.wristR;
+        // Grip: the haft runs up out of the fist, clear of the arm (see HELD_TOOL_POSE).
+        this.tool.position.copyFrom(HELD_TOOL_POSE.position);
+        this.tool.rotation.set(HELD_TOOL_POSE.rotationX, 0, HELD_TOOL_POSE.rotationZ);
+        // NOTE: in Babylon 9.33 getChildMeshes(true) means DIRECT children
+        // only; tool parts (handle grip/butt, axe head) are nested deeper, so
+        // false is required to register every part as a shadow caster.
+        this.toolMeshes = this.tool.getChildMeshes(false).filter((m): m is Mesh => m instanceof Mesh);
+      }
     }
     if (this.onToolShadows) this.onToolShadows(this.toolMeshes, removed);
   }
@@ -442,7 +446,7 @@ export class PlayerCharacter {
       this.armL.rotation.x += (-idle - this.armL.rotation.x) * k;
       this.elbowL.rotation.x += (-0.3 - this.elbowL.rotation.x) * k;
       this.armL.rotation.z += (0.06 - this.armL.rotation.z) * k;
-      if (this.toolKind && !harvesting) {
+      if (this.heldId && !harvesting) {
         // Holding a tool: right arm rests forward and slightly out, ready to strike.
         const tx = -0.6 + idle;
         const tz = 0.35;

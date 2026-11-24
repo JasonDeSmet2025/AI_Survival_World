@@ -79,8 +79,12 @@ export const BUILDABLE = new Set([
   'sign',
 ]);
 
-/** Items a quest reward may pay out. Building items are craftable anyway. */
-const REWARDABLE_ITEMS = new Set(['wood', 'stone', 'berry', 'cooked_berry']);
+/**
+ * Items a quest reward may pay out. Building items are craftable anyway.
+ * `gold` is the witch's currency, `herb`/`salve` her tower goods: an NPC
+ * may hand out anything the ITEMS registry actually contains.
+ */
+const REWARDABLE_ITEMS = new Set(['wood', 'stone', 'berry', 'cooked_berry', 'gold', 'herb', 'salve']);
 
 const ID_RE = /^[a-z][a-z0-9_]{1,31}$/;
 
@@ -165,7 +169,7 @@ export function describeGoal(quest: QuestDef, progress = quest.goal.count): stri
       case 'build':
         return `Bouw ${q.goal.target}`;
       case 'talk':
-        return `Praat met ${q.goal.target === 'mara' ? 'Mara' : q.goal.target === 'tomas' ? 'Tomas' : q.goal.target}`;
+        return `Praat met ${q.goal.target === 'mara' ? 'Mara' : q.goal.target === 'tomas' ? 'Tomas' : q.goal.target === 'heks' ? 'de heks' : q.goal.target}`;
     }
   };
   return `${goalName(quest)} — ${p}/${quest.goal.count}`;

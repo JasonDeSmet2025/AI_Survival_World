@@ -122,6 +122,15 @@ export const ITEMS: Record<string, ItemDef> = {
     id: 'wool', name: 'Wol', kind: 'resource', stack: 12,
     color: [0.9, 0.87, 0.8], desc: 'Van schapen. Zachte isolatie — tapijt en warmte.',
   },
+  // --- the money + the spider yield -----------------------------------------
+  gold: {
+    id: 'gold', name: 'Goudstuk', kind: 'resource', stack: 200,
+    color: [0.92, 0.72, 0.22], desc: 'Munt van de dorpelingen. In de toren boven de spinnen te vinden, uit te geven bij Mara en Tomas — ze dongen af, net als echte mensen.',
+  },
+  silk: {
+    id: 'silk', name: 'Spinrag', kind: 'resource', stack: 24,
+    color: [0.82, 0.84, 0.9], desc: 'Sterker dan draad. Mara koopt het voor verband, Tomas voor pezen — uit de buik van een torenspin.',
+  },
   leather: {
     id: 'leather', name: 'Leder', kind: 'resource', stack: 12,
     color: [0.55, 0.36, 0.2], desc: 'Van runderen. Sterk scharnier- en bindingmateriaal.',
@@ -163,6 +172,62 @@ export const ITEMS: Record<string, ItemDef> = {
     id: 'potion_night', name: 'Nachtzichtdrank', kind: 'food', stack: 5,
     color: [0.35, 0.55, 0.95], desc: 'Van de heks — 120 seconden licht rondom jou in het donker.',
     edible: { hunger: 1, thirst: 5, health: 1 },
+  },
+  potion_fire: {
+    id: 'potion_fire', name: 'Vuurdrank', kind: 'food', stack: 5,
+    color: [1.0, 0.42, 0.1], desc: 'Van de heks — 120 seconden prikt lava je alleen maar.',
+    edible: { hunger: 2, thirst: 4, health: 1 },
+  },
+  potion_strength: {
+    id: 'potion_strength', name: 'Krachtdrank', kind: 'food', stack: 5,
+    color: [0.7, 0.15, 0.15], desc: 'Van de heks — 90 seconden slaan en schieten dubbel zo hard.',
+    edible: { hunger: 2, thirst: 4, health: 1 },
+  },
+  potion_tough: {
+    id: 'potion_tough', name: 'Houtenhuid', kind: 'food', stack: 5,
+    color: [0.45, 0.35, 0.2], desc: 'Van de heks — 90 seconden voel je klauwen en bits als takken.',
+    edible: { hunger: 2, thirst: 4, health: 1 },
+  },
+  herb: {
+    id: 'herb', name: 'Torenkruid', kind: 'resource', stack: 64,
+    color: [0.35, 0.6, 0.3], desc: 'Groeit in de pot van een heks en in de vacht van haar wachters. Moeder van elke drank — en van Wondzalf.',
+  },
+  // --- THE FOUR ELEMENTS -------------------------------------------------
+  // The alchemy layer of the world. Each element is reaped from ONE kind of
+  // nature (see ELEMENT_DROPS in systems/elements.ts): fire comes only from
+  // the crater's glassy rocks, air from the leafy canopy, earth from under
+  // the pines and water from the dewy berry bushes — the elements are what
+  // make you walk into different corners of the map. A pinch eaten raw gives
+  // a short (20 s) version of the witch's brew; combined with Torenkruid at
+  // the workbench it becomes the real thing.
+  element_fire: {
+    id: 'element_fire', name: 'Vuurpoeder', kind: 'resource', stack: 20,
+    color: [1.0, 0.45, 0.12],
+    desc: 'Vonkend glasgruis uit de kraterstenen. Eet een snuf (20 s lava-immuun) of stook er bij de tekentafel een Vuurdrank van.',
+    edible: { hunger: 1, thirst: 0, health: 0 },
+  },
+  element_water: {
+    id: 'element_water', name: 'Waterdauw', kind: 'resource', stack: 20,
+    color: [0.3, 0.62, 0.95],
+    desc: 'Heldere dauw die op rijpe bessen blijft hangen. Eet een snuf (20 s nachtzicht) of brouw er bij de tekentafel een Nachtzichtdrank van.',
+    edible: { hunger: 1, thirst: 8, health: 1 },
+  },
+  element_air: {
+    id: 'element_air', name: 'Luchtveder', kind: 'resource', stack: 20,
+    color: [0.75, 0.9, 0.98],
+    desc: 'Pluizig vederschil dat hoog boven de bomen blijft zweven. Eet een snuf (20 s sneller) of bind er bij de tekentafel een Snelheidsdrank van.',
+    edible: { hunger: 1, thirst: 0, health: 1 },
+  },
+  element_earth: {
+    id: 'element_earth', name: 'Aardekloot', kind: 'resource', stack: 20,
+    color: [0.46, 0.33, 0.2],
+    desc: 'Klibberige kluit onder de naaldbomen. Eet een kloot (20 s houtenhuid) of meng er bij de tekentafel Houtenhuid van.',
+    edible: { hunger: 2, thirst: 0, health: 1 },
+  },
+  salve: {
+    id: 'salve', name: 'Wondzalf', kind: 'food', stack: 10,
+    color: [0.55, 0.8, 0.5], desc: 'Van torenkruid en bessen — eetbare smeer die 30 gezondheid herstelt.',
+    edible: { hunger: 4, thirst: 2, health: 30 },
   },
   // --- second building tier (added with the extra craft list) -------------
   rope: {
@@ -378,6 +443,19 @@ export const RECIPES: Recipe[] = [
     unlockLevel: 2,
   },
   {
+    // The alchemist's answer to the witch's heal potion: she keeps her
+    // recipe, the player can copy the HERB half of it. Needs the table —
+    // grinding salve bare-handed is a fairy tale.
+    id: 'recipe_salve',
+    output: { id: 'salve', count: 1 },
+    inputs: [
+      { id: 'herb', count: 2 },
+      { id: 'berry', count: 2 },
+    ],
+    craftSeconds: 4,
+    unlockLevel: 2,
+  },
+  {
     id: 'recipe_sign',
     output: { id: 'sign', count: 1 },
     inputs: [{ id: 'wood', count: 2 }],
@@ -452,6 +530,50 @@ export const RECIPES: Recipe[] = [
       { id: 'cooked_beef', count: 1 },
       { id: 'cooked_mutton', count: 1 },
       { id: 'berry', count: 2 },
+    ],
+    craftSeconds: 6,
+    unlockLevel: 4,
+  },
+  // --- ELEMENTAL ALCHEMY -------------------------------------------------
+  // The witch's monopoly, politely ended: with an element in one hand and
+  // her own torenkruid in the other, the workbench replicates her brews at
+  // level 4. Raw pinches work in a hurry; real brewing is twice as strong.
+  {
+    id: 'recipe_potion_fire',
+    output: { id: 'potion_fire', count: 1 },
+    inputs: [
+      { id: 'element_fire', count: 2 },
+      { id: 'herb', count: 1 },
+    ],
+    craftSeconds: 6,
+    unlockLevel: 4,
+  },
+  {
+    id: 'recipe_potion_night',
+    output: { id: 'potion_night', count: 1 },
+    inputs: [
+      { id: 'element_water', count: 2 },
+      { id: 'herb', count: 1 },
+    ],
+    craftSeconds: 6,
+    unlockLevel: 4,
+  },
+  {
+    id: 'recipe_potion_swift',
+    output: { id: 'potion_swift', count: 1 },
+    inputs: [
+      { id: 'element_air', count: 2 },
+      { id: 'herb', count: 1 },
+    ],
+    craftSeconds: 6,
+    unlockLevel: 4,
+  },
+  {
+    id: 'recipe_potion_tough',
+    output: { id: 'potion_tough', count: 1 },
+    inputs: [
+      { id: 'element_earth', count: 2 },
+      { id: 'herb', count: 1 },
     ],
     craftSeconds: 6,
     unlockLevel: 4,

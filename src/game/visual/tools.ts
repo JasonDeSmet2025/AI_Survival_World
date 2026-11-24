@@ -62,14 +62,21 @@ const rod = (
 function makeHandle(scene: Scene, wood: PBRMaterial, length: number, thickness = 0.045): TransformNode {
   const root = new TransformNode('handle', scene);
   const butt = rod(scene, 'handleButt', thickness * 1.25, length * 0.14, wood);
-  butt.position.y = length * 0.07;
   const grip = rod(scene, 'handleGrip', thickness, length * 0.5, wood);
-  grip.position.y = length * 0.39;
   const mid = rod(scene, 'handleMid', thickness * 1.1, length * 0.36, wood);
-  mid.position.y = length * 0.82;
+  // PARENT FIRST, then position: in this Babylon build ANY re-parenting
+  // (`.parent =`, `addChild`, even `setParent`) preserves the WORLD transform
+  // and rewrites the local numbers. A part positioned before parenting gets
+  // its local y silently rewritten to -(parent height) — the axe/pick heads
+  // "sank" out of the haft and hung below the fist (the upside-down tool the
+  // user saw). Parenting while the child is still at the world origin makes
+  // the world-preserving no-op, and the authored local offsets survive.
   grip.parent = root;
+  grip.position.y = length * 0.39;
   mid.parent = root;
+  mid.position.y = length * 0.82;
   butt.parent = root;
+  butt.position.y = length * 0.07;
   return root;
 }
 
@@ -85,8 +92,8 @@ export function createAxe(scene: Scene, mats: SharedMaterials): TransformNode {
   const L = 0.5;
 
   const handle = makeHandle(scene, mats.toolWood, L);
-  handle.position.y = -GRIP_FROM_BUTT;
   handle.parent = root;
+  handle.position.y = -GRIP_FROM_BUTT;
 
   // Head group at the top of the haft.
   const head = new TransformNode('axeHead', scene);
@@ -96,25 +103,25 @@ export function createAxe(scene: Scene, mats: SharedMaterials): TransformNode {
 
   // Stone wedge: main body + wider cutting edge bevel.
   const stone = box(scene, 'axeStone', 0.16, 0.2, 0.055, mats.toolStone);
+  stone.parent = head;
   stone.position.x = 0.085;
   stone.rotation.y = 0.16;
-  head.addChild(stone);
 
   const edge = box(scene, 'axeEdge', 0.21, 0.05, 0.062, mats.toolStone);
+  edge.parent = head;
   edge.position.set(0.1, 0.085, 0.004);
   edge.rotation.z = -0.22;
-  head.addChild(edge);
 
   // Back (poll) of the head, slightly smaller than the edge.
   const poll = box(scene, 'axePoll', 0.19, 0.045, 0.05, mats.toolStone);
+  poll.parent = head;
   poll.position.set(0.09, -0.095, 0);
   poll.rotation.z = 0.18;
-  head.addChild(poll);
 
   // Haft band.
   const band = box(scene, 'axeBand', 0.075, 0.11, 0.075, mats.playerBoots);
+  band.parent = root;
   band.position.y = head.position.y;
-  root.addChild(band);
 
   return root;
 }
@@ -128,8 +135,8 @@ export function createPickaxe(scene: Scene, mats: SharedMaterials): TransformNod
   const L = 0.62;
 
   const handle = makeHandle(scene, mats.toolWood, L, 0.042);
-  handle.position.y = -GRIP_FROM_BUTT;
   handle.parent = root;
+  handle.position.y = -GRIP_FROM_BUTT;
 
   const head = new TransformNode('pickHead', scene);
   head.parent = root;
@@ -137,7 +144,7 @@ export function createPickaxe(scene: Scene, mats: SharedMaterials): TransformNod
 
   // Center striking boss.
   const boss = box(scene, 'pickBoss', 0.13, 0.075, 0.05, mats.toolStone);
-  head.addChild(boss);
+  boss.parent = head;
 
   // Two horns sweeping up and out.
   for (const side of [-1, 1] as const) {
@@ -147,19 +154,19 @@ export function createPickaxe(scene: Scene, mats: SharedMaterials): TransformNod
     horn.rotation.z = side * -0.62;
 
     const sweep1 = box(scene, `pickSweep${side}`, 0.17, 0.042, 0.045, mats.toolStone);
+    sweep1.parent = horn;
     sweep1.position.x = side * 0.085;
-    horn.addChild(sweep1);
 
     const tip = box(scene, `pickTip${side}`, 0.09, 0.032, 0.04, mats.toolStone);
+    tip.parent = horn;
     tip.position.set(side * 0.21, side * 0.02, 0);
     tip.rotation.z = side * -0.35;
-    horn.addChild(tip);
   }
 
   // Haft band.
   const band = box(scene, 'pickBand', 0.072, 0.1, 0.072, mats.playerBoots);
+  band.parent = root;
   band.position.y = head.position.y;
-  root.addChild(band);
 
   return root;
 }
@@ -174,29 +181,28 @@ export function createSword(scene: Scene, mats: SharedMaterials): TransformNode 
 
   // Grip: short turned rod, pommel cap at the base.
   const grip = rod(scene, 'swordGrip', 0.035, 0.16, mats.toolWood);
+  grip.parent = root;
   grip.position.y = -0.06;
-  root.addChild(grip);
   const pommel = box(scene, 'swordPommel', 0.05, 0.03, 0.05, mats.playerBoots);
+  pommel.parent = root;
   pommel.position.y = -0.145;
-  root.addChild(pommel);
 
   // Guard across the blade base.
   const guard = box(scene, 'swordGuard', 0.14, 0.028, 0.045, mats.playerBoots);
+  guard.parent = root;
   guard.position.y = 0.035;
-  root.addChild(guard);
 
   // Blade: main body tapering forward, plus a lighter edge line.
   const blade = box(scene, 'swordBlade', 0.055, 0.42, 0.018, mats.toolStone);
+  blade.parent = root;
   blade.position.y = 0.27;
-  blade.rotation.z = 0.0;
-  root.addChild(blade);
   const tip = box(scene, 'swordTip', 0.04, 0.1, 0.017, mats.toolStone);
+  tip.parent = root;
   tip.position.y = 0.52;
   tip.rotation.z = 0.5;
-  root.addChild(tip);
   const edge = box(scene, 'swordEdge', 0.02, 0.4, 0.021, mats.playerAccent);
+  edge.parent = root;
   edge.position.set(0.028, 0.27, 0);
-  root.addChild(edge);
 
   return root;
 }

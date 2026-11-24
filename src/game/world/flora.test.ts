@@ -49,7 +49,10 @@ describe('genPlacements', () => {
     expect(counts.rock).toBeGreaterThan(20);
     expect(counts.rock).toBeLessThan(700);
     expect(counts.bush).toBeGreaterThan(40);
-    expect(counts.bush).toBeLessThan(500);
+    // Rail is on the instance count (perf), not on aesthetics. The second
+    // island added ~10k m2 of colonisable land, which pushed bushes (the most
+    // generous scatter) from ~495 to 525; every other kind still fits.
+    expect(counts.bush).toBeLessThan(600);
     expect(counts.grass).toBeGreaterThan(600);
     expect(counts.flower).toBeGreaterThan(40);
     expect(counts.plant).toBeGreaterThan(100);

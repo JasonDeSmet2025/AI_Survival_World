@@ -61,9 +61,14 @@ describe('witch shop offers', () => {
 
   it('potions are barter-only consumables, not tools', () => {
     // (guards against someone adding recipe_potion later)
-    for (const o of SHOP_OFFERS) {
-      expect(ITEMS[o.gives].kind).toBe('food');
-    }
+    const potions = SHOP_OFFERS.filter((o) => o.gives.startsWith('potion_'));
+    expect(potions.length).toBeGreaterThanOrEqual(6);
+    for (const o of potions) expect(ITEMS[o.gives].kind).toBe('food');
+    // torenkruid is the one non-food good on her shelf: a crafting seed,
+    // deliberately not a snack and not a tool
+    const herb = SHOP_OFFERS.find((o) => o.gives === 'herb');
+    expect(herb, 'she sells herb').toBeDefined();
+    expect(ITEMS[herb!.gives].kind).toBe('resource');
   });
 });
 

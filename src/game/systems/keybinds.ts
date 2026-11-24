@@ -34,8 +34,10 @@ export type Action =
   | 'sprint'
   | 'crouch'
   | 'interact'
+  | 'negotiate'
   | 'harvest'
   | 'craft'
+  | 'perks'
   | 'inventory'
   | 'drop'
   | 'consume'
@@ -58,7 +60,7 @@ export type Bindings = Record<Action, string>;
 
 export const ACTIONS: Action[] = [
   'forward', 'back', 'left', 'right', 'jump', 'sprint', 'crouch',
-  'interact', 'harvest', 'craft', 'inventory', 'drop', 'consume', 'attack',
+  'interact', 'negotiate', 'harvest', 'craft', 'perks', 'inventory', 'drop', 'consume', 'attack',
   'settings', 'buildUp', 'buildDown', 'close',
   'slot1', 'slot2', 'slot3', 'slot4', 'slot5', 'slot6', 'slot7', 'slot8',
 ];
@@ -80,11 +82,11 @@ export const KEYBIND_GROUPS: ReadonlyArray<{ title: string; actions: Action[] }>
   },
   {
     title: 'Acties',
-    actions: ['interact', 'harvest', 'attack', 'consume', 'drop'],
+    actions: ['interact', 'negotiate', 'harvest', 'attack', 'consume', 'drop'],
   },
   {
     title: 'Vensters',
-    actions: ['craft', 'inventory', 'settings', 'close', 'buildUp', 'buildDown'],
+    actions: ['craft', 'perks', 'inventory', 'settings', 'close', 'buildUp', 'buildDown'],
   },
   { title: 'Voorwerpkeuze', actions: SLOT_ACTIONS },
 ];
@@ -98,8 +100,10 @@ export const DEFAULT_BINDINGS: Bindings = {
   sprint: 'ShiftLeft',
   crouch: 'KeyC',
   interact: 'KeyE',
+  negotiate: 'KeyN',
   harvest: 'KeyF',
   craft: 'KeyB',
+  perks: 'KeyK',
   inventory: 'KeyI',
   drop: 'KeyQ',
   consume: 'KeyR',
@@ -137,6 +141,7 @@ export const ACTION_LABEL: Record<Action, string> = {
   sprint: 'Sprinten',
   crouch: 'Hurken',
   interact: 'Interactie (praten, bouwen, eten)',
+  negotiate: 'Onderhandelen (dorpelingen)',
   harvest: 'Oogsten (houden)',
   craft: 'Craft-menu',
   inventory: 'Rugzak',
@@ -144,6 +149,7 @@ export const ACTION_LABEL: Record<Action, string> = {
   consume: 'Eten / drinken',
   attack: 'Aanvallen / schieten',
   settings: 'Instellingen',
+  perks: 'Talenten openen',
   buildUp: 'Bouwhoogte omhoog',
   buildDown: 'Bouwhoogte omlaag',
   close: 'Venster sluiten',

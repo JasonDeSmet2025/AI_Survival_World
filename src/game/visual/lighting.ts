@@ -11,6 +11,7 @@ import {
   Vector3,
 } from '@babylonjs/core';
 import { clamp, lerp } from '../core/noise';
+import type { ShadowMode } from '../systems/quality';
 import { createEnvironmentPresets, type EnvironmentPreset } from './textures';
 import type { Sky } from '../world/sky';
 import type { Water } from '../world/water';
@@ -48,6 +49,10 @@ export class Lighting {
   private hemi: HemisphericLight;
   private sun: DirectionalLight;
   private shadow: ShadowGenerator;
+  /** Every caster ever registered, so a tier change can restore them exactly. */
+  private casterRegistrations = new Map<string, { mesh: AbstractMesh; includeDescendants: boolean }>();
+  private shadowsOn = true;
+  private shadowMode: ShadowMode = 'full';
   private sky: Sky;
   private water: Water;
   /**
@@ -148,11 +153,76 @@ export class Lighting {
    * expanded to their child meshes by the caller.)
    */
   addShadowCaster(mesh: AbstractMesh, includeDescendants = false): void {
-    this.shadow.addShadowCaster(mesh, includeDescendants);
+    // Track every registration so the adaptive quality tier can take ALL
+    // casters away (potato mode) and hand the exact same list back later.
+    const key = `${mesh.uniqueId}:${includeDescendants}`;
+    if (this.casterRegistrations.has(key)) return;
+    this.casterRegistrations.set(key, { mesh, includeDescendants });
+    if (this.shadowsOn) this.shadow.addShadowCaster(mesh, includeDescendants);
   }
 
   removeShadowCaster(mesh: AbstractMesh, includeDescendants = false): void {
+    const key = `${mesh.uniqueId}:${includeDescendants}`;
+    this.casterRegistrations.delete(key);
     this.shadow.removeShadowCaster(mesh, includeDescendants);
+  }
+
+  /**
+   * The adaptive quality tier (systems/quality.ts). Shadows are the single
+   * biggest GPU cost in this world: EVERY frame the shadow generator draws
+   * all caster geometry again (all nearby trees!) into its map, plus a blur
+   * post-process chain — and this Babylon build has no refresh-rate control
+   * on the generator at all, so the only lever is what the map is.
+   *
+   *   full  – 2048 blurred map (the shipped look)
+   *   soft  – 1024 blurred map: same look, a quarter of the map pixels
+   *   plain – 1024 unblurred exponential map: no blur passes at all
+   *   off   – casters removed + darkness 1: the map stops being drawn AND
+   *           every shader's shadow term collapses to a no-op multiply
+   */
+  setShadowMode(mode: ShadowMode): void {
+    if (mode === this.shadowMode) return;
+    this.shadowMode = mode;
+    switch (mode) {
+      case 'full':
+        this.shadowsOn = true;
+        this.shadow.mapSize = 2048;
+        this.shadow.useBlurExponentialShadowMap = true;
+        this.shadow.blurKernel = 24;
+        this.shadow.darkness = 0.7;
+        this.sun.shadowFrustumSize = 130;
+        for (const r of this.casterRegistrations.values())
+          this.shadow.addShadowCaster(r.mesh, r.includeDescendants);
+        break;
+      case 'soft':
+        this.shadowsOn = true;
+        this.shadow.mapSize = 1024;
+        this.shadow.useBlurExponentialShadowMap = true;
+        this.shadow.blurKernel = 16;
+        this.shadow.darkness = 0.7;
+        this.sun.shadowFrustumSize = 130;
+        for (const r of this.casterRegistrations.values())
+          this.shadow.addShadowCaster(r.mesh, r.includeDescendants);
+        break;
+      case 'plain':
+        this.shadowsOn = true;
+        this.shadow.mapSize = 1024;
+        this.shadow.useExponentialShadowMap = true; // no blur chain at all
+        this.shadow.darkness = 0.6;
+        this.sun.shadowFrustumSize = 100;
+        for (const r of this.casterRegistrations.values())
+          this.shadow.addShadowCaster(r.mesh, r.includeDescendants);
+        break;
+      case 'off':
+        this.shadowsOn = false;
+        for (const r of this.casterRegistrations.values())
+          this.shadow.removeShadowCaster(r.mesh, r.includeDescendants);
+        // darkness 1 makes every shadow sample an exact no-op (the terrain
+        // shader mirrors computeShadowWithESM: 1 - clamp(x, 0, 1 - 1) = 1),
+        // so the stale map is never even read meaningfully.
+        this.shadow.darkness = 1;
+        break;
+    }
   }
 
   /**

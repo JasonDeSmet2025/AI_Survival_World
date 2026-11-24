@@ -23,6 +23,7 @@ import {
 } from '@babylonjs/core';
 import type { CaveSite } from '../world/caves';
 import { caveCeiling } from '../world/caves';
+import type { LavaLake, VolcanoChest } from '../world/volcano';
 import type { SharedMaterials } from './materials';
 
 /** Everything a builder produced, disposable in one call. */
@@ -285,4 +286,221 @@ export function buildWitch(scene: Scene): { root: TransformNode; update(dt: numb
     return true;
   };
   return { root, update };
+}
+
+// ---------------------------------------------------------------------------
+// The volcano: lava lake, magma vent and the hoard chests
+// ---------------------------------------------------------------------------
+
+/**
+ * What `buildVolcanoShrine` produces: the glowing lava disc + vent dressing
+ * plus a per-frame shimmer. The lava itself is terrain (world/volcano.ts
+ * carves the bowl); this dresses its surface with light and movement, the
+ * same trick `buildCaveInterior` plays for the carved caves.
+ */
+export interface VolcanoFx {
+  meshes: Mesh[];
+  update(dt: number, t: number): void;
+  dispose(): void;
+}
+
+/**
+ * The lava lake: a sunk emissive disc whose rim buries under the scanned
+ * bowl floor (volcanoLake()), a hot inner disc, the glowing magma vent with
+ * scorched rims, and one flickering orange light over the crater.
+ */
+export function buildVolcanoShrine(
+  scene: Scene,
+  lake: LavaLake,
+  vent: { x: number; z: number; r: number },
+  floorYAt: (x: number, z: number) => number,
+): VolcanoFx {
+  const meshes: Mesh[] = [];
+  const lights: PointLight[] = [];
+
+  const deep = glowMat(scene, 'lavaDeep', 0.55, 0.13, 0.02);
+  const hot = glowMat(scene, 'lavaHot', 1.0, 0.52, 0.12);
+  const scorched = glowMat(scene, 'ventGlow', 1.0, 0.34, 0.05);
+
+  // The lake: a wide dark-orange disc sunk into the floor, with a smaller
+  // brighter disc on top — the two-tone reads as molten rock with crust.
+  const disc = MeshBuilder.CreateCylinder(
+    'lavaLake',
+    { diameter: lake.r * 2, height: 0.14, tessellation: 40 },
+    scene,
+  );
+  disc.position.set(lake.x, lake.y + 0.02, lake.z);
+  disc.material = deep;
+  disc.freezeWorldMatrix();
+  meshes.push(disc);
+
+  const inner = MeshBuilder.CreateCylinder(
+    'lavaHot',
+    { diameter: lake.r * 1.35, height: 0.06, tessellation: 32 },
+    scene,
+  );
+  inner.position.set(lake.x + 0.6, lake.y + 0.09, lake.z - 0.4);
+  inner.material = hot;
+  inner.freezeWorldMatrix();
+  meshes.push(inner);
+
+  // The vent: a glowing plug with a collar of scorched cones, seated on
+  // the real crater floor (the height field is the authority — the glow
+  // sinks slightly into the rock so no seam can show).
+  const ventY = floorYAt(vent.x, vent.z);
+  const plug = MeshBuilder.CreateCylinder(
+    'ventPlug',
+    { diameter: vent.r * 2, height: 0.1, tessellation: 20 },
+    scene,
+  );
+  plug.position.set(vent.x, ventY + 0.03, vent.z);
+  const collar: Mesh[] = [];
+  const collarMats: PBRMaterial[] = [];
+  for (let i = 0; i < 7; i++) {
+    const a = (i / 7) * Math.PI * 2 + 0.4;
+    const rock = MeshBuilder.CreateCylinder(
+      `ventRock${i}`,
+      { diameterTop: 0.05, diameterBottom: 0.5, height: 0.5 + (i % 3) * 0.16, tessellation: 6 },
+      scene,
+    );
+    rock.position.set(
+      vent.x + Math.cos(a) * (vent.r + 0.5),
+      ventY + 0.14,
+      vent.z + Math.sin(a) * (vent.r + 0.5),
+    );
+    rock.rotation.z = Math.cos(a) * 0.24;
+    rock.rotation.x = Math.sin(a) * 0.24;
+    const dark = new PBRMaterial(`ventRockMat${i}`, scene);
+    dark.albedoColor = new Color3(0.07, 0.06, 0.065);
+    dark.roughness = 1;
+    dark.emissiveColor = new Color3(0.05, 0.012, 0.002);
+    rock.material = dark;
+    collarMats.push(dark);
+    collar.push(rock);
+    meshes.push(rock);
+  }
+  plug.material = scorched;
+  meshes.push(plug);
+
+  // One flickering sun over the crater — the bowl lives on this light.
+  const light = new PointLight('lavaLight', new Vector3(lake.x, lake.y + 6, lake.z), scene);
+  light.diffuse = new Color3(1, 0.45, 0.12);
+  light.specular = new Color3(0.9, 0.4, 0.2);
+  light.range = 46;
+  light.intensity = 2.2;
+  lights.push(light);
+
+  // Seat helper removed — the builders above already sink into the floor.
+  const update = (_dt: number, t: number): void => {
+    // Flicker: two detuned sines, never a perfect cycle.
+    light.intensity = 2.1 + Math.sin(t * 2.2) * 0.5 + Math.sin(t * 5.7) * 0.24;
+    const pulse = 0.86 + Math.sin(t * 1.6) * 0.1 + Math.sin(t * 4.9) * 0.05;
+    hot.emissiveColor.set(1.0 * pulse, 0.52 * pulse, 0.12 * pulse);
+    scorched.emissiveColor.set(1.0 * pulse, 0.34 * pulse, 0.05 * pulse);
+  };
+
+  return {
+    meshes,
+    update,
+    dispose: () => {
+      for (const l of lights) l.dispose();
+      for (const m of meshes) m.dispose();
+      deep.dispose();
+      hot.dispose();
+      scorched.dispose();
+      for (const m of collarMats) m.dispose();
+    },
+  };
+}
+
+/** Runtime handle for one den chest — the game drives the lid animation. */
+export interface ChestDecor {
+  root: TransformNode;
+  /** Raise the lid (1) or drop it back (0); `tick` eases it there. */
+  setOpen(open: boolean): void;
+  /** Ease the lid towards its target (called from the frame loop). */
+  tick(dt: number): void;
+  dispose(): void;
+}
+
+/**
+ * A loot strongbox on the crater floor: dark planks, iron bands and a lid
+ * that hinges open — the great chest shows a seam of gold once opened.
+ * `opened` restores the already-looted look straight from a save file.
+ */
+export function buildChest(scene: Scene, c: VolcanoChest, opened: boolean): ChestDecor {
+  const root = new TransformNode(`chest_${c.id}`, scene);
+  root.position.set(c.x, 0, c.z); // game.ts sets y on the real ground
+  root.rotation.y = c.yaw;
+  const meshes: Mesh[] = [];
+  const mats: PBRMaterial[] = [];
+
+  const wood = new PBRMaterial(`chestWood_${c.id}`, scene);
+  wood.albedoColor = c.tier === 'great' ? new Color3(0.24, 0.13, 0.07) : new Color3(0.19, 0.14, 0.1);
+  wood.roughness = 0.8;
+  const iron = new PBRMaterial(`chestIron_${c.id}`, scene);
+  iron.albedoColor = new Color3(0.32, 0.3, 0.28);
+  iron.metallic = 0.8;
+  iron.roughness = 0.4;
+  mats.push(wood, iron);
+
+  const box = (name: string, w: number, h: number, d: number, mat: PBRMaterial, x: number, y: number, z: number): Mesh => {
+    const m = MeshBuilder.CreateBox(name, { width: w, height: h, depth: d }, scene);
+    m.position.set(x, y, z);
+    m.material = mat;
+    m.parent = root;
+    meshes.push(m);
+    return m;
+  };
+
+  const W = c.tier === 'great' ? 1.35 : 1.0;
+  const D = c.tier === 'great' ? 0.8 : 0.66;
+  const bodyH = 0.5;
+  box(`chestBody_${c.id}`, W, bodyH, D, wood, 0, bodyH / 2, 0);
+  for (const bx of [-W * 0.3, W * 0.3]) {
+    box(`chestBand_${c.id}_${bx.toFixed(2)}`, 0.08, bodyH + 0.02, D + 0.02, iron, bx, bodyH / 2, 0);
+  }
+
+  // Lid pivots on its back edge so it swings open like a real chest.
+  const lidPivot = new TransformNode(`chestLidPivot_${c.id}`, scene);
+  lidPivot.parent = root;
+  lidPivot.position.set(0, bodyH, -D / 2);
+  const lid = box(`chestLid_${c.id}`, W + 0.04, 0.22, D + 0.04, wood, 0, 0.11, D / 2);
+  lid.parent = lidPivot;
+  const lock = box(`chestLock_${c.id}`, 0.14, 0.18, 0.06, iron, 0, 0.05, D / 2 + 0.02);
+  lock.parent = lidPivot;
+
+  // A seam of gold inside the great chest, glowing once the lid is up.
+  if (c.tier === 'great') {
+    const gold = new PBRMaterial(`chestGold_${c.id}`, scene);
+    gold.albedoColor = new Color3(0.85, 0.62, 0.16);
+    gold.metallic = 0.9;
+    gold.roughness = 0.25;
+    gold.emissiveColor = new Color3(0.35, 0.22, 0.03);
+    mats.push(gold);
+    const seam = box(`chestGold_${c.id}`, W - 0.2, 0.1, D - 0.2, gold, 0, bodyH - 0.06, 0);
+    seam.parent = root;
+  }
+
+  let target = opened ? 1 : 0;
+  let angle = opened ? -1.95 : 0;
+  lidPivot.rotation.x = angle;
+
+  return {
+    root,
+    setOpen(open: boolean): void {
+      target = open ? 1 : 0;
+    },
+    tick(dt: number): void {
+      const to = target * -1.95;
+      if (Math.abs(angle - to) < 0.005) return;
+      angle += (to - angle) * Math.min(1, dt * 6);
+      lidPivot.rotation.x = angle;
+    },
+    dispose(): void {
+      for (const m of meshes) m.dispose();
+      for (const m of mats) m.dispose();
+      root.dispose();
+    },
+  };
 }

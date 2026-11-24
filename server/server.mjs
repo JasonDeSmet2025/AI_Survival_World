@@ -331,7 +331,7 @@ function handleWsMessage(ws, msg) {
       const saved = profile?.pos;
       const name = uniqueName(sanitizeName(msg.name) ?? sanitizeName(store.nameOf(token)) ?? 'Speler');
       const pos = saved ? [saved.x, saved.y, saved.z] : [0, 5, 0];
-      const me = { id, name, token, p: pos, r: 0, ws, spawnIndex: spawnCounter++ };
+      const me = { id, name, token, p: pos, r: 0, h: '', ws, spawnIndex: spawnCounter++ };
       players.set(id, me);
       store.setName(token, name);
       send(ws, {
@@ -355,7 +355,7 @@ function handleWsMessage(ws, msg) {
       });
       // joined carries the joiner's current position so remote avatars do
       // not spawn at the world origin and then teleport (B9).
-      broadcast({ t: 'joined', id, name, p: [me.p[0], me.p[1], me.p[2]], r: me.r }, id);
+      broadcast({ t: 'joined', id, name, p: [me.p[0], me.p[1], me.p[2]], r: me.r, h: me.h }, id);
       break;
     }
     case 'pos': {
@@ -368,10 +368,14 @@ function handleWsMessage(ws, msg) {
       me.p = [q(msg.p?.[0] ?? 0), q(msg.p?.[1] ?? 0), q(msg.p?.[2] ?? 0)];
       const r = Number(msg.r ?? 0);
       me.r = Number.isFinite(r) ? Math.round(r * 100) / 100 : 0;
+      // Held item id: strict item-id shape (lowercase alnum + underscore),
+      // max 32 chars, anything else becomes empty hands. The CLIENT also
+      // validates against its own item table, so this is belt and braces.
+      me.h = typeof msg.h === 'string' && /^[a-z][a-z0-9_]{0,31}$/.test(msg.h) ? msg.h : '';
       // Remember where they are standing: a reload should put you back where
       // you walked to, not at the spot of the last 15 s autosave.
       store.savePos(me.token, { x: me.p[0], y: me.p[1], z: me.p[2] }, me.r);
-      broadcast({ t: 'p', id: me.id, p: me.p, r: me.r }, me.id);
+      broadcast({ t: 'p', id: me.id, p: me.p, r: me.r, h: me.h }, me.id);
       break;
     }
     case 'place': {

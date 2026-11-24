@@ -65,16 +65,19 @@ export class CookSession {
   readonly outputId: string;
   /** The campfire building id this cook runs next to. */
   readonly fireId: string;
+  /** Speed scale from the station/perks (1 = the recipe's own seconds). */
+  private speed = 1;
 
   private elapsed = 0;
   private cancelled = false;
   private finished = false;
   private blocked = false;
 
-  private constructor(itemId: string, outputId: string, fireId: string) {
+  private constructor(itemId: string, outputId: string, fireId: string, speedScale = 1) {
     this.itemId = itemId;
     this.outputId = outputId;
     this.fireId = fireId;
+    this.speed = Number.isFinite(speedScale) && speedScale > 0 ? speedScale : 1;
   }
 
   /**
@@ -87,6 +90,7 @@ export class CookSession {
     itemId: string | null,
     inv: Inventory,
     fire: { id: string; fuel?: number },
+    speedScale = 1,
   ): CookSession | null {
     if (!isCokable(itemId)) return null;
     const def = ITEMS[itemId];
@@ -94,13 +98,14 @@ export class CookSession {
     if (inv.count(itemId) <= 0) return null;
     if (!isLit(fire.fuel)) return null;
     if (!cookHasRoom(inv, itemId)) return null;
-    return new CookSession(itemId, output.output, fire.id);
+    return new CookSession(itemId, output.output, fire.id, speedScale);
   }
 
-  /** Total real seconds this item takes to cook. */
+  /** Total real seconds this item takes to cook (speed scale applied). */
   get duration(): number {
     const def = ITEMS[this.itemId];
-    return (def.cookable as { output: string; seconds: number }).seconds;
+    const s = Number.isFinite(this.speed) && this.speed > 0 ? this.speed : 1;
+    return (def.cookable as { output: string; seconds: number }).seconds / s;
   }
 
   /** Progress in [0, 1]. */
